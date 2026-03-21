@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Bloom Welcome
+Comment=Welcome to Bloom
+Exec=bloom-welcome
+Icon=bloom-icon
+Type=Application
+Categories=Settings;GTK;
+Terminal=false
+StartupNotify=true

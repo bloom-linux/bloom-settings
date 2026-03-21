@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""Bloom Volume — compact centered popup."""
+
+import os
+import gi
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gtk, Gdk, GLib
+import subprocess, re, sys, os
+
+def _bloom_colors():
+    import configparser as _cp
+    d = {"accent": "#B01828", "bg": "#0D0618", "fg": "#F0EEF4", "fg_dim": "#88809A"}
+    conf = os.path.expanduser("~/.config/bloom/colors.conf")
+    cp = _cp.ConfigParser()
+    try:
+        cp.read(conf)
+        def g(k, v): return cp.get("Colors", k).strip() if cp.has_option("Colors", k) else v
+        scheme = g("scheme", "dark")
+        d["accent"] = g("accent", d["accent"])
+        if scheme == "dark":
+            d["bg"]     = g("bg",       "#0D0618")
+            d["fg"]     = g("text",     "#F0EEF4")
+            d["fg_dim"] = g("text_dim", "#88809A")
+        else:
+            d["bg"]     = g("bg",       "#F5F3F7")
+            d["fg"]     = g("text",     "#1A1420")
+            d["fg_dim"] = g("text_dim", "#6B6378")
+    except Exception:
+        pass
+    def _hex2rgb(h):
+        h = h.lstrip("#")
+        return int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
+    r, g, b = _hex2rgb(d["accent"])
+    d["accent_rgb"] = f"{r},{g},{b}"
+    return d
+
+_C         = _bloom_colors()
+ACCENT     = _C["accent"]
+ACCENT_RGB = _C["accent_rgb"]
+BG     = _C["bg"]
+FG     = _C["fg"]
+FG_DIM = _C["fg_dim"]
+
+CSS = f"""
+window {{
+    background-color: {BG};
+    border: 1px solid rgba({ACCENT_RGB},0.4);
+    border-radius: 16px;
+    color: {FG};
+}}
+.section-label {{
+    font-size: 10px;
+    font-weight: 700;
+    color: {FG_DIM};
+    letter-spacing: 1px;
+    margin-bottom: 2px;
+}}
+scale trough {{
+    background-color: rgba(255,255,255,0.10);
+    border-radius: 4px;
+    min-height: 6px;
+}}
+scale trough highlight {{
+    background-color: {ACCENT};
+    border-radius: 4px;
+}}
+scale slider {{
+    background-color: white;
+    border-radius: 50%;
+    min-width: 14px;
+    min-height: 14px;
+}}
+.mute-btn {{
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    padding: 4px 6px;
+    color: {FG};
+    font-size: 16px;
+}}
+.mute-btn.muted {{ color: {ACCENT}; }}
+.mute-btn:hover {{ background: rgba(255,255,255,0.10); }}
+.header-label {{
+    font-size: 10px;
+    font-weight: 800;
+    color: {FG_DIM};
+    letter-spacing: 2px;
+}}
+.close-btn {{
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    color: {FG_DIM};
+    padding: 4px 6px;
+    font-size: 12px;
+}}
+.close-btn:hover {{ background: rgba(255,255,255,0.10); color: {FG}; }}
+.vol-pct {{
+    font-size: 11px;
+    color: {FG_DIM};
+    min-width: 36px;
+}}
+separator {{
+    background: rgba(255,255,255,0.08);
+    min-height: 1px;
+    margin: 8px 0;
+}}
+"""
+
+def run(cmd):
+    try:
+        return subprocess.run(cmd, shell=True, capture_output=True,
+                              text=True, timeout=2).stdout.strip()
+    except Exception:
+        return ""
+
+def get_volume(target="@DEFAULT_AUDIO_SINK@"):
+    out = run(f"wpctl get-volume {target}")
+    m = re.search(r"Volume:\s*([\d.]+)", out)
+    vol = int(float(m.group(1)) * 100) if m else 0
+    return vol, "[MUTED]" in out
+
+def set_volume(vol, target):
+    run(f"wpctl set-volume {target} {vol / 100:.2f}")
+
+def toggle_mute(target):
+    run(f"wpctl set-mute {target} toggle")
+
+
+class VolumePopup(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="bloom.volume")
+
+    def do_activate(self):
+        provider = Gtk.CssProvider()
+        provider.load_from_data(CSS.encode())
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        win = Gtk.ApplicationWindow(application=self)
+        win.set_decorated(False)
+        win.set_resizable(False)
+        win.set_default_size(300, -1)
+        self._win = win
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_margin_top(14); box.set_margin_bottom(16)
+        box.set_margin_start(18); box.set_margin_end(18)
+        win.set_child(box)
+
+        # Header
+        hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        hdr.set_margin_bottom(10)
+        title = Gtk.Label(label="AUDIO")
+        title.add_css_class("header-label")
+        title.set_hexpand(True); title.set_halign(Gtk.Align.START)
+        hdr.append(title)
+        close = Gtk.Button(label="✕")
+        close.add_css_class("close-btn")
+        close.connect("clicked", lambda _: win.close())
+        hdr.append(close)
+        box.append(hdr)
+
+        # Output
+        lbl = Gtk.Label(label="OUTPUT")
+        lbl.add_css_class("section-label"); lbl.set_halign(Gtk.Align.START)
+        box.append(lbl)
+        v, m = get_volume("@DEFAULT_AUDIO_SINK@")
+        box.append(self._row(v, m, "@DEFAULT_AUDIO_SINK@"))
+
+        box.append(Gtk.Separator())
+
+        # Microphone
+        lbl2 = Gtk.Label(label="MICROPHONE")
+        lbl2.add_css_class("section-label"); lbl2.set_halign(Gtk.Align.START)
+        box.append(lbl2)
+        v2, m2 = get_volume("@DEFAULT_AUDIO_SOURCE@")
+        box.append(self._row(v2, m2, "@DEFAULT_AUDIO_SOURCE@"))
+
+        # Esc to close
+        kc = Gtk.EventControllerKey()
+        kc.connect("key-pressed",
+                   lambda c, k, *_: win.close() if k == Gdk.KEY_Escape else None)
+        win.add_controller(kc)
+
+        win.present()
+        self._idle_tid = GLib.timeout_add(8000, win.close)
+
+    def _reset_idle(self):
+        if self._idle_tid:
+            GLib.source_remove(self._idle_tid)
+        self._idle_tid = GLib.timeout_add(8000, self._win.close)
+
+    def _row(self, vol, muted, target):
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        row.set_margin_top(2)
+
+        icon = "\U000f0581" if muted else ("\U000f057e" if vol > 50 else "\U000f057f")
+        btn = Gtk.Button(label=icon)
+        btn.add_css_class("mute-btn")
+        if muted:
+            btn.add_css_class("muted")
+
+        scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL)
+        scale.set_range(0, 100); scale.set_value(vol)
+        scale.set_hexpand(True); scale.set_draw_value(False)
+
+        pct = Gtk.Label(label=f"{vol}%")
+        pct.add_css_class("vol-pct"); pct.set_xalign(1)
+
+        scale.connect("value-changed", lambda s, p=pct, t=target: [
+            p.set_label(f"{int(s.get_value())}%"),
+            set_volume(int(s.get_value()), t),
+            self._reset_idle()])
+
+        def on_mute(b, s=scale, t=target):
+            self._reset_idle()
+            toggle_mute(t)
+            nv, nm = get_volume(t)
+            if nm:
+                b.add_css_class("muted"); b.set_label("\U000f0581")
+            else:
+                b.remove_css_class("muted")
+                b.set_label("\U000f057e" if s.get_value() > 50 else "\U000f057f")
+
+        btn.connect("clicked", on_mute)
+        row.append(btn); row.append(scale); row.append(pct)
+        return row
+
+
+if __name__ == "__main__":
+    VolumePopup().run(sys.argv)

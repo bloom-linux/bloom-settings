@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+"""Bloom Brightness — compact centered brightness popup."""
+
+import os
+import gi
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gtk, Gdk, GLib
+import subprocess, sys, os, glob as _glob
+
+def _bloom_colors():
+    import configparser as _cp
+    d = {"accent": "#B01828", "bg": "#0D0618", "fg": "#F0EEF4", "fg_dim": "#88809A"}
+    conf = os.path.expanduser("~/.config/bloom/colors.conf")
+    cp = _cp.ConfigParser()
+    try:
+        cp.read(conf)
+        def g(k, v): return cp.get("Colors", k).strip() if cp.has_option("Colors", k) else v
+        scheme = g("scheme", "dark")
+        d["accent"] = g("accent", d["accent"])
+        if scheme == "dark":
+            d["bg"]     = g("bg",       "#0D0618")
+            d["fg"]     = g("text",     "#F0EEF4")
+            d["fg_dim"] = g("text_dim", "#88809A")
+        else:
+            d["bg"]     = g("bg",       "#F5F3F7")
+            d["fg"]     = g("text",     "#1A1420")
+            d["fg_dim"] = g("text_dim", "#6B6378")
+    except Exception:
+        pass
+    def _hex2rgb(h):
+        h = h.lstrip("#")
+        return int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
+    r, g, b = _hex2rgb(d["accent"])
+    d["accent_rgb"] = f"{r},{g},{b}"
+    return d
+
+_C         = _bloom_colors()
+ACCENT     = _C["accent"]
+ACCENT_RGB = _C["accent_rgb"]
+BG     = _C["bg"]
+FG     = _C["fg"]
+FG_DIM = _C["fg_dim"]
+
+CSS = f"""
+window {{
+    background-color: {BG};
+    border: 1px solid rgba({ACCENT_RGB},0.4);
+    border-radius: 16px;
+    color: {FG};
+}}
+.header-label {{
+    font-size: 10px; font-weight: 800;
+    color: {FG_DIM}; letter-spacing: 2px;
+}}
+.close-btn {{
+    background: transparent; border: none; border-radius: 8px;
+    color: {FG_DIM}; padding: 4px 6px; font-size: 12px;
+}}
+.close-btn:hover {{ background: rgba(255,255,255,0.10); color: {FG}; }}
+.section-label {{
+    font-size: 10px; font-weight: 700; color: {FG_DIM};
+    letter-spacing: 1px; margin-bottom: 2px;
+}}
+scale trough {{
+    background-color: rgba(255,255,255,0.10);
+    border-radius: 4px; min-height: 6px;
+}}
+scale trough highlight {{
+    background-color: {ACCENT}; border-radius: 4px;
+}}
+scale slider {{
+    background-color: white; border-radius: 50%;
+    min-width: 14px; min-height: 14px;
+}}
+.bright-icon {{
+    font-size: 18px; color: {FG}; padding: 4px 6px;
+}}
+.vol-pct {{
+    font-size: 11px; color: {FG_DIM}; min-width: 36px;
+}}
+"""
+
+def _get_brightness():
+    """Return (current_pct 0-100, sysfs_dir_or_None)."""
+    for d in _glob.glob("/sys/class/backlight/*/"):
+        try:
+            cur = int(open(d + "brightness").read().strip())
+            mx  = int(open(d + "max_brightness").read().strip())
+            return max(0, min(100, cur * 100 // max(mx, 1))), d
+        except Exception:
+            pass
+    # Fallback: brightnessctl
+    try:
+        out = subprocess.run(["brightnessctl", "-m"], capture_output=True, text=True,
+                             timeout=2).stdout.strip()
+        if out:
+            parts = out.split(",")
+            if len(parts) >= 5:
+                return int(parts[4].rstrip("%")), None
+    except Exception:
+        pass
+    return 50, None   # reasonable default
+
+def _set_brightness(pct, sysfs_dir):
+    """Set brightness by percentage."""
+    pct = max(5, min(100, pct))
+    if sysfs_dir:
+        try:
+            mx = int(open(sysfs_dir + "max_brightness").read().strip())
+            val = mx * pct // 100
+            try:
+                open(sysfs_dir + "brightness", "w").write(str(val))
+                return
+            except PermissionError:
+                subprocess.Popen(["pkexec", "bash", "-c",
+                                  f"echo {val} > {sysfs_dir}brightness"])
+                return
+        except Exception:
+            pass
+    # Fallback to brightnessctl
+    subprocess.Popen(["brightnessctl", "set", f"{pct}%"])
+
+
+class BrightnessApp(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="bloom.brightness")
+        self._tid = None
+
+    def do_activate(self):
+        provider = Gtk.CssProvider()
+        provider.load_from_data(CSS.encode())
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        win = Gtk.ApplicationWindow(application=self)
+        win.set_decorated(False)
+        win.set_resizable(False)
+        win.set_default_size(300, -1)
+        self._win = win
+
+        bright_pct, self._sysfs = _get_brightness()
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_margin_top(14); box.set_margin_bottom(16)
+        box.set_margin_start(18); box.set_margin_end(18)
+        win.set_child(box)
+
+        # Header
+        hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        hdr.set_margin_bottom(10)
+        title = Gtk.Label(label="BRIGHTNESS")
+        title.add_css_class("header-label")
+        title.set_hexpand(True); title.set_halign(Gtk.Align.START)
+        hdr.append(title)
+        close = Gtk.Button(label="✕")
+        close.add_css_class("close-btn")
+        close.connect("clicked", lambda _: win.close())
+        hdr.append(close)
+        box.append(hdr)
+
+        # Slider row
+        lbl = Gtk.Label(label="SCREEN")
+        lbl.add_css_class("section-label"); lbl.set_halign(Gtk.Align.START)
+        box.append(lbl)
+
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        row.set_margin_top(2)
+
+        icon = Gtk.Label(label="\U000f00e0")  # brightness icon (MDI sun)
+        icon.add_css_class("bright-icon"); row.append(icon)
+
+        scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL)
+        scale.set_range(5, 100); scale.set_value(bright_pct)
+        scale.set_hexpand(True); scale.set_draw_value(False)
+
+        pct_lbl = Gtk.Label(label=f"{bright_pct}%")
+        pct_lbl.add_css_class("vol-pct"); pct_lbl.set_xalign(1)
+
+        scale.connect("value-changed", lambda s, p=pct_lbl: self._on_change(s, p))
+        row.append(scale); row.append(pct_lbl)
+        box.append(row)
+
+        kc = Gtk.EventControllerKey()
+        kc.connect("key-pressed",
+                   lambda c, k, *_: win.close() if k == Gdk.KEY_Escape else None)
+        win.add_controller(kc)
+
+        win.present()
+        self._idle_tid = GLib.timeout_add(8000, win.close)
+
+    def _reset_idle(self):
+        if self._idle_tid:
+            GLib.source_remove(self._idle_tid)
+        self._idle_tid = GLib.timeout_add(8000, self._win.close)
+
+    def _on_change(self, scale, pct_lbl):
+        pct = int(scale.get_value())
+        pct_lbl.set_label(f"{pct}%")
+        self._reset_idle()
+        if self._tid:
+            GLib.source_remove(self._tid)
+        self._tid = GLib.timeout_add(
+            80,
+            lambda: (_set_brightness(pct, self._sysfs), False)[-1]
+        )
+
+
+if __name__ == "__main__":
+    BrightnessApp().run(sys.argv)

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Bloom Network Manager
+Comment=Manage WiFi and connections
+Exec=bloom-network
+Icon=network-wireless
+Type=Application
+Categories=Settings;Network;GTK;
+Terminal=false
+StartupNotify=true
+NoDisplay=false

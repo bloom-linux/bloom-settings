@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Bloom Settings
+Comment=Configure your system
+Exec=bloom-settings
+Icon=bloom-icon
+Type=Application
+Categories=Settings;GTK;
+Terminal=false
+StartupNotify=true

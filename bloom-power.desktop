@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Bloom Power Menu
+Comment=Lock, Suspend, Logout, Restart, Shutdown
+Exec=bloom-power
+Icon=system-shutdown
+Type=Application
+Categories=Settings;GTK;
+Terminal=false
+StartupNotify=true
+NoDisplay=false

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Install Bloom
+Comment=Install the system to disk
+Exec=bloom-install
+Icon=system-installer
+Type=Application
+Categories=Settings;GTK;
+Terminal=false
+StartupNotify=true
+NoDisplay=false

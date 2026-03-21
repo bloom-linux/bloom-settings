@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Bloom Power — lock / suspend / logout / restart / shutdown popup."""
+
+import gi
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gtk, Gdk, GLib
+import subprocess, sys, os
+
+def _bloom_colors():
+    import configparser as _cp
+    d = {"accent": "#B01828", "bg": "#0D0618", "fg": "#F0EEF4", "fg_dim": "#88809A"}
+    conf = os.path.expanduser("~/.config/bloom/colors.conf")
+    cp = _cp.ConfigParser()
+    try:
+        cp.read(conf)
+        def g(k, v): return cp.get("Colors", k).strip() if cp.has_option("Colors", k) else v
+        scheme = g("scheme", "dark")
+        d["accent"] = g("accent", d["accent"])
+        if scheme == "dark":
+            d["bg"]     = g("bg",       "#0D0618")
+            d["fg"]     = g("text",     "#F0EEF4")
+            d["fg_dim"] = g("text_dim", "#88809A")
+        else:
+            d["bg"]     = g("bg",       "#F5F3F7")
+            d["fg"]     = g("text",     "#1A1420")
+            d["fg_dim"] = g("text_dim", "#6B6378")
+    except Exception:
+        pass
+    def _hex2rgb(h):
+        h = h.lstrip("#")
+        return int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
+    r, g, b = _hex2rgb(d["accent"])
+    d["accent_rgb"] = f"{r},{g},{b}"
+    return d
+
+_C         = _bloom_colors()
+ACCENT     = _C["accent"]
+ACCENT_RGB = _C["accent_rgb"]
+BG     = _C["bg"]
+FG     = _C["fg"]
+FG_DIM = _C["fg_dim"]
+
+CSS = f"""
+window {{
+    background-color: {BG};
+    border-radius: 16px;
+    border: 1px solid rgba({ACCENT_RGB},0.35);
+}}
+.header-label {{
+    font-size: 10px;
+    font-weight: 800;
+    color: rgba(240, 238, 244, 0.40);
+    letter-spacing: 2px;
+}}
+.power-btn {{
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 12px;
+    color: {FG};
+    font-size: 13px;
+    font-weight: 600;
+    padding: 10px 16px;
+    margin: 2px 12px;
+}}
+.power-btn:hover {{
+    background: rgba({ACCENT_RGB},0.22);
+    border-color: rgba({ACCENT_RGB},0.5);
+}}
+.close-btn {{
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    color: rgba(240, 238, 244, 0.40);
+    padding: 4px 6px;
+    font-size: 12px;
+}}
+.close-btn:hover {{
+    background: rgba(255,255,255,0.08);
+    color: {FG};
+}}
+"""
+
+ACTIONS = [
+    ("\U000f033e", "Lock",      ["hyprlock"]),
+    ("\u23fe",     "Suspend",   ["systemctl", "suspend"]),
+    ("\U000f0343", "Log Out",   ["uwsm", "stop"]),
+    ("\U000f0709", "Restart",   ["systemctl", "reboot"]),
+    ("\U000f0425", "Shut Down", ["systemctl", "poweroff"]),
+]
+
+
+class PowerApp(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="bloom.power")
+
+    def do_activate(self):
+        provider = Gtk.CssProvider()
+        provider.load_from_data(CSS.encode())
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        win = Gtk.ApplicationWindow(application=self)
+        win.set_decorated(False)
+        win.set_resizable(False)
+        win.set_default_size(230, -1)
+        self._win = win
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        box.set_margin_bottom(12)
+        win.set_child(box)
+
+        # Header
+        hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        hdr.set_margin_top(14); hdr.set_margin_start(20)
+        hdr.set_margin_end(12); hdr.set_margin_bottom(6)
+        title = Gtk.Label(label="POWER")
+        title.add_css_class("header-label")
+        title.set_hexpand(True); title.set_halign(Gtk.Align.START)
+        hdr.append(title)
+        close = Gtk.Button(label="✕")
+        close.add_css_class("close-btn")
+        close.connect("clicked", lambda _: win.close())
+        hdr.append(close)
+        box.append(hdr)
+
+        for icon, label, cmd in ACTIONS:
+            btn = Gtk.Button()
+            btn.add_css_class("power-btn")
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            row.append(Gtk.Label(label=icon))
+            lbl = Gtk.Label(label=label)
+            lbl.set_xalign(0); lbl.set_hexpand(True)
+            row.append(lbl)
+            btn.set_child(row)
+            btn.connect("clicked",
+                        lambda _, c=cmd: [subprocess.Popen(c), win.close()])
+            box.append(btn)
+
+        kc = Gtk.EventControllerKey()
+        kc.connect("key-pressed",
+                   lambda c, k, *_: win.close() if k == Gdk.KEY_Escape else None)
+        win.add_controller(kc)
+
+        win.present()
+
+
+if __name__ == "__main__":
+    PowerApp().run(sys.argv)

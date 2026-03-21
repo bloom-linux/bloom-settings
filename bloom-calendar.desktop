@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Bloom Calendar
+Comment=Simple clock and calendar popup
+Exec=bloom-calendar
+Icon=office-calendar
+Type=Application
+Categories=Settings;GTK;
+Terminal=false
+StartupNotify=true
+NoDisplay=false

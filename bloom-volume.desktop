@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Bloom Volume Control
+Comment=Simple volume mixer popup
+Exec=bloom-volume
+Icon=audio-volume-high
+Type=Application
+Categories=Settings;Audio;GTK;
+Terminal=false
+StartupNotify=true
+NoDisplay=false

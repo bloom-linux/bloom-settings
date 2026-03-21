@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+"""Bloom Network — WiFi/connection manager popup."""
+
+import gi
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gtk, Gdk, GLib
+import subprocess, threading, sys, os
+
+def _bloom_colors():
+    import configparser as _cp
+    d = {"accent": "#B01828", "bg": "#0D0618", "fg": "#F0EEF4", "fg_dim": "#88809A"}
+    conf = os.path.expanduser("~/.config/bloom/colors.conf")
+    cp = _cp.ConfigParser()
+    try:
+        cp.read(conf)
+        def g(k, v): return cp.get("Colors", k).strip() if cp.has_option("Colors", k) else v
+        scheme = g("scheme", "dark")
+        d["accent"] = g("accent", d["accent"])
+        if scheme == "dark":
+            d["bg"]     = g("bg",       "#0D0618")
+            d["fg"]     = g("text",     "#F0EEF4")
+            d["fg_dim"] = g("text_dim", "#88809A")
+        else:
+            d["bg"]     = g("bg",       "#F5F3F7")
+            d["fg"]     = g("text",     "#1A1420")
+            d["fg_dim"] = g("text_dim", "#6B6378")
+    except Exception:
+        pass
+    def _hex2rgb(h):
+        h = h.lstrip("#")
+        return int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
+    r, g, b = _hex2rgb(d["accent"])
+    d["accent_rgb"] = f"{r},{g},{b}"
+    return d
+
+_C         = _bloom_colors()
+ACCENT     = _C["accent"]
+ACCENT_RGB = _C["accent_rgb"]
+BG     = _C["bg"]
+FG     = _C["fg"]
+FG_DIM = _C["fg_dim"]
+
+CSS = f"""
+window {{
+    background-color: {BG};
+    border-radius: 16px;
+    border: 1px solid rgba({ACCENT_RGB},0.35);
+}}
+.header-label {{ font-size: 10px; font-weight: 800; color: {FG_DIM}; letter-spacing: 2px; }}
+.status-lbl {{ font-size: 12px; color: {FG_DIM}; padding: 4px 20px 10px 20px; }}
+.net-row {{ padding: 8px 16px; border-radius: 10px; margin: 2px 8px; }}
+.net-row:hover {{ background: rgba({ACCENT_RGB},0.12); }}
+.net-row.active-net {{ background: rgba({ACCENT_RGB},0.22); }}
+.ssid {{ font-size: 13px; font-weight: 600; color: {FG}; }}
+.signal-lbl {{ font-size: 12px; color: {FG_DIM}; margin-right: 6px; }}
+.connect-btn {{
+    background: {ACCENT}; color: white; border-radius: 8px;
+    padding: 4px 12px; font-size: 12px; font-weight: 700; border: none;
+}}
+.disconnect-btn {{
+    background: rgba(255,255,255,0.08); color: {FG_DIM};
+    border-radius: 8px; padding: 4px 10px; font-size: 12px; border: none;
+}}
+.footer-btn {{
+    background: transparent; color: {FG_DIM};
+    font-size: 12px; padding: 6px 16px; border: none; border-radius: 8px;
+}}
+.footer-btn:hover {{ background: rgba(255,255,255,0.06); color: {FG}; }}
+.close-btn {{
+    background: transparent; border: none; border-radius: 8px;
+    color: {FG_DIM}; padding: 4px 6px; font-size: 12px;
+}}
+.close-btn:hover {{ background: rgba(255,255,255,0.10); color: {FG}; }}
+"""
+
+# Wifi signal strength icons (confirmed codepoints from bloom-network)
+_WIFI_ICONS = ["\U000f091f", "\U000f0922", "\U000f0925", "\U000f0928"]
+
+def signal_icon(sig):
+    s = int(sig or 0)
+    if s >= 75: return _WIFI_ICONS[3]
+    if s >= 50: return _WIFI_ICONS[2]
+    if s >= 25: return _WIFI_ICONS[1]
+    return _WIFI_ICONS[0]
+
+
+def run(cmd, timeout=5):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.stdout.strip(), r.returncode
+    except Exception:
+        return "", 1
+
+
+def get_ethernet():
+    out, _ = run(["nmcli", "-t", "-f", "NAME,DEVICE,TYPE,STATE",
+                  "connection", "show", "--active"])
+    connections = []
+    for line in out.splitlines():
+        parts = line.split(":")
+        if len(parts) < 4:
+            continue
+        if parts[2] == "802-3-ethernet":
+            connections.append({"name": parts[0], "device": parts[1]})
+    return connections
+
+
+def get_networks():
+    out, _ = run(["nmcli", "-t", "-f", "ACTIVE,SSID,SIGNAL,SECURITY",
+                  "device", "wifi", "list"])
+    networks, seen = [], set()
+    for line in out.splitlines():
+        parts = line.split(":")
+        if len(parts) < 4 or not parts[1] or parts[1] in seen:
+            continue
+        seen.add(parts[1])
+        networks.append({
+            "active":   parts[0] == "yes",
+            "ssid":     parts[1],
+            "signal":   parts[2],
+            "security": parts[3],
+        })
+    return sorted(networks, key=lambda n: (not n["active"], -int(n["signal"] or 0)))
+
+
+class NetworkApp(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="bloom.network")
+
+    def do_activate(self):
+        provider = Gtk.CssProvider()
+        provider.load_from_data(CSS.encode())
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        win = Gtk.ApplicationWindow(application=self)
+        win.set_decorated(False)
+        win.set_resizable(False)
+        win.set_default_size(320, 460)
+        self._win = win
+
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        win.set_child(root)
+
+        # Header
+        hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        hdr.set_margin_top(14); hdr.set_margin_start(20)
+        hdr.set_margin_end(12)
+        title = Gtk.Label(label="NETWORK")
+        title.add_css_class("header-label")
+        title.set_hexpand(True); title.set_halign(Gtk.Align.START)
+        hdr.append(title)
+        close = Gtk.Button(label="✕")
+        close.add_css_class("close-btn")
+        close.connect("clicked", lambda _: win.close())
+        hdr.append(close)
+        root.append(hdr)
+
+        self.status_lbl = Gtk.Label(label="Scanning\u2026")
+        self.status_lbl.add_css_class("status-lbl")
+        self.status_lbl.set_halign(Gtk.Align.START)
+        root.append(self.status_lbl)
+
+        sw = Gtk.ScrolledWindow()
+        sw.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        sw.set_vexpand(True)
+        root.append(sw)
+        self.list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        sw.set_child(self.list_box)
+
+        footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        footer.set_margin_top(4); footer.set_margin_bottom(8)
+        footer.set_halign(Gtk.Align.CENTER)
+        adv = Gtk.Button(label="Advanced Settings")
+        adv.add_css_class("footer-btn")
+        adv.connect("clicked", lambda _: subprocess.Popen(["nm-connection-editor"]))
+        footer.append(adv)
+        root.append(footer)
+
+        kc = Gtk.EventControllerKey()
+        kc.connect("key-pressed",
+                   lambda c, k, *_: win.close() if k == Gdk.KEY_Escape else None)
+        win.add_controller(kc)
+
+        win.present()
+        self._idle_tid = GLib.timeout_add(30000, win.close)
+        self._refresh()
+
+    def _reset_idle(self):
+        if self._idle_tid:
+            GLib.source_remove(self._idle_tid)
+        self._idle_tid = GLib.timeout_add(30000, self._win.close)
+
+    def _refresh(self):
+        threading.Thread(target=self._load, daemon=True).start()
+
+    def _load(self):
+        GLib.idle_add(self._populate, get_ethernet(), get_networks())
+
+    def _populate(self, eth_conns, nets):
+        while (c := self.list_box.get_first_child()):
+            self.list_box.remove(c)
+
+        # -- Ethernet section --
+        if eth_conns:
+            eth_hdr = Gtk.Label(label="WIRED")
+            eth_hdr.add_css_class("header-label")
+            eth_hdr.set_margin_start(20); eth_hdr.set_margin_top(8)
+            eth_hdr.set_margin_bottom(4); eth_hdr.set_halign(Gtk.Align.START)
+            self.list_box.append(eth_hdr)
+            for conn in eth_conns:
+                row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                row.add_css_class("net-row")
+                row.add_css_class("active-net")
+                icon = Gtk.Label(label="\U000f0200")  # 󰈀 ethernet
+                icon.add_css_class("signal-lbl")
+                row.append(icon)
+                name = Gtk.Label(label=f"{conn['name']} ({conn['device']})")
+                name.add_css_class("ssid")
+                name.set_hexpand(True); name.set_xalign(0)
+                row.append(name)
+                btn = Gtk.Button(label="Disconnect")
+                btn.add_css_class("disconnect-btn")
+                btn.connect("clicked", lambda _, c=conn: self._on_eth_disconnect(c))
+                row.append(btn)
+                self.list_box.append(row)
+
+        # -- Wifi section --
+        wifi_hdr = Gtk.Label(label="WIRELESS")
+        wifi_hdr.add_css_class("header-label")
+        wifi_hdr.set_margin_start(20); wifi_hdr.set_margin_top(8)
+        wifi_hdr.set_margin_bottom(4); wifi_hdr.set_halign(Gtk.Align.START)
+        self.list_box.append(wifi_hdr)
+
+        if not nets:
+            self.status_lbl.set_text("No networks found" if not eth_conns else "Wired only")
+            return
+        active = next((n["ssid"] for n in nets if n["active"]), None)
+        if eth_conns:
+            self.status_lbl.set_text(f"Wired + WiFi: {active}" if active else "Wired connected")
+        else:
+            self.status_lbl.set_text(f"Connected: {active}" if active else "Not connected")
+
+        for net in nets:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            row.add_css_class("net-row")
+            if net["active"]:
+                row.add_css_class("active-net")
+
+            sig = Gtk.Label(label=signal_icon(net["signal"]))
+            sig.add_css_class("signal-lbl")
+            row.append(sig)
+
+            name = Gtk.Label(label=net["ssid"])
+            name.add_css_class("ssid")
+            name.set_hexpand(True); name.set_xalign(0)
+            row.append(name)
+
+            btn = Gtk.Button(label="Disconnect" if net["active"] else "Connect")
+            btn.add_css_class("disconnect-btn" if net["active"] else "connect-btn")
+            btn.connect("clicked", lambda _, n=net: self._on_click(n))
+            row.append(btn)
+
+            self.list_box.append(row)
+
+    def _on_eth_disconnect(self, conn):
+        subprocess.Popen(["nmcli", "connection", "down", conn["name"]])
+        GLib.timeout_add(2000, self._refresh)
+
+    def _on_click(self, net):
+        if net["active"]:
+            subprocess.Popen(["nmcli", "connection", "down", net["ssid"]])
+        else:
+            subprocess.Popen(["nmcli", "device", "wifi", "connect", net["ssid"]])
+        GLib.timeout_add(2000, self._refresh)
+
+
+
+if __name__ == "__main__":
+    NetworkApp().run(sys.argv)

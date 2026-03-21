@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""Bloom Calendar — clock + calendar popup."""
+
+import gi
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gtk, Gdk, GLib
+from datetime import datetime
+import os
+
+def _bloom_colors():
+    import configparser as _cp
+    d = {"accent": "#B01828", "bg": "#0D0618", "bg_mid": "#100520",
+         "fg": "#F0EEF4", "fg_dim": "#88809A"}
+    conf = os.path.expanduser("~/.config/bloom/colors.conf")
+    cp = _cp.ConfigParser()
+    try:
+        cp.read(conf)
+        def g(k, v): return cp.get("Colors", k).strip() if cp.has_option("Colors", k) else v
+        scheme = g("scheme", "dark")
+        d["accent"] = g("accent", d["accent"])
+        if scheme == "dark":
+            d["bg"]     = g("bg",       "#0D0618")
+            d["bg_mid"] = g("overlay",  "#100520")
+            d["fg"]     = g("text",     "#F0EEF4")
+            d["fg_dim"] = g("text_dim", "#88809A")
+        else:
+            d["bg"]     = g("bg",       "#F5F3F7")
+            d["bg_mid"] = g("overlay",  "#EDE9F0")
+            d["fg"]     = g("text",     "#1A1420")
+            d["fg_dim"] = g("text_dim", "#6B6378")
+    except Exception:
+        pass
+    return d
+
+_C     = _bloom_colors()
+ACCENT = _C["accent"]
+BG     = _C["bg"]
+BG_MID = _C["bg_mid"]
+FG     = _C["fg"]
+FG_DIM = _C["fg_dim"]
+
+CSS = f"""
+window {{
+    background-color: {BG};
+    border-radius: 16px;
+    border: 1px solid rgba(176,24,40,0.35);
+}}
+.clock {{
+    font-size: 52px;
+    font-weight: 800;
+    color: {FG};
+    padding: 18px 28px 2px 28px;
+}}
+.date-label {{
+    font-size: 13px;
+    color: {FG_DIM};
+    padding-bottom: 10px;
+}}
+calendar {{
+    background-color: {BG_MID};
+    color: {FG};
+    border: none;
+    border-radius: 0 0 14px 14px;
+    padding: 8px;
+    font-size: 13px;
+}}
+calendar:selected {{
+    background-color: {ACCENT};
+    color: white;
+    border-radius: 6px;
+}}
+.header-label {{
+    font-size: 10px;
+    font-weight: 800;
+    color: {FG_DIM};
+    letter-spacing: 2px;
+}}
+.close-btn {{
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    color: {FG_DIM};
+    padding: 4px 6px;
+    font-size: 12px;
+}}
+.close-btn:hover {{ background: rgba(255,255,255,0.10); color: {FG}; }}
+"""
+
+
+class CalendarApp(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="bloom.calendar")
+
+    def do_activate(self):
+        provider = Gtk.CssProvider()
+        provider.load_from_data(CSS.encode())
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        win = Gtk.ApplicationWindow(application=self)
+        win.set_decorated(False)
+        win.set_resizable(False)
+        win.set_default_size(320, -1)
+        self._win = win
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        win.set_child(box)
+
+        # Header
+        hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        hdr.set_margin_top(14); hdr.set_margin_start(20)
+        hdr.set_margin_end(12)
+        title = Gtk.Label(label="CALENDAR")
+        title.add_css_class("header-label")
+        title.set_hexpand(True); title.set_halign(Gtk.Align.START)
+        hdr.append(title)
+        close = Gtk.Button(label="✕")
+        close.add_css_class("close-btn")
+        close.connect("clicked", lambda _: win.close())
+        hdr.append(close)
+        box.append(hdr)
+
+        self.clock_lbl = Gtk.Label()
+        self.clock_lbl.add_css_class("clock")
+        self.clock_lbl.set_halign(Gtk.Align.CENTER)
+        box.append(self.clock_lbl)
+
+        self.date_lbl = Gtk.Label()
+        self.date_lbl.add_css_class("date-label")
+        self.date_lbl.set_halign(Gtk.Align.CENTER)
+        box.append(self.date_lbl)
+
+        box.append(Gtk.Calendar())
+
+        self._update_clock()
+        GLib.timeout_add_seconds(1, self._update_clock)
+
+        kc = Gtk.EventControllerKey()
+        kc.connect("key-pressed",
+                   lambda c, k, *_: win.close() if k == Gdk.KEY_Escape else None)
+        win.add_controller(kc)
+
+        win.present()
+        GLib.timeout_add(30000, win.close)
+
+    def _update_clock(self):
+        now = datetime.now()
+        self.clock_lbl.set_text(now.strftime("%H:%M"))
+        self.date_lbl.set_text(now.strftime("%A, %B %-d, %Y"))
+        return True
+
+
+
+if __name__ == "__main__":
+    CalendarApp().run()
