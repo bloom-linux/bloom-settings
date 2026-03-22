@@ -68,7 +68,8 @@ class KeyboardPage(Gtk.Box):
         layout_card.add_css_class("card")
         ll = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2); ll.set_hexpand(True)
         ll.append(Gtk.Label(label="Keyboard Layout", css_classes=["card-name"], xalign=0))
-        ll.append(Gtk.Label(label="Applies to console and X11", css_classes=["card-desc"], xalign=0))
+        ll.append(Gtk.Label(label="Applies immediately via Hyprland; also persists to system console",
+                           css_classes=["card-desc"], xalign=0))
         layout_card.append(ll)
         layouts = ["us", "gb", "de", "fr", "es", "it", "pl", "ru", "pt", "nl",
                    "se", "no", "fi", "dk", "cz", "hu", "ro", "tr", "jp", "cn",
@@ -78,10 +79,15 @@ class KeyboardPage(Gtk.Box):
         cur = layout.split(",")[0].strip() if layout else "us"
         if cur in layouts:
             kb_combo.set_selected(layouts.index(cur))
+
+        def _apply_layout(c, ls):
+            lo = ls[c.get_selected()]
+            subprocess.Popen(["hyprctl", "keyword", "input:kb_layout", lo])
+            subprocess.Popen(["pkexec", "localectl", "set-keymap", lo])
+
         apply_btn = Gtk.Button(label="Apply"); apply_btn.add_css_class("act-btn")
         apply_btn.set_valign(Gtk.Align.CENTER)
-        apply_btn.connect("clicked", lambda _, c=kb_combo, ls=layouts:
-                          subprocess.Popen(["pkexec", "localectl", "set-keymap", ls[c.get_selected()]]))
+        apply_btn.connect("clicked", lambda _, c=kb_combo, ls=layouts: _apply_layout(c, ls))
         layout_card.append(kb_combo); layout_card.append(apply_btn)
         self._root.append(layout_card)
 
@@ -173,9 +179,11 @@ class MouseTouchpadPage(Gtk.Box):
         try: spd_slider.set_value(float(speed))
         except: spd_slider.set_value(0.0)
         spd_slider.set_hexpand(True); spd_slider.set_draw_value(True)
-        spd_slider.connect("value-changed", lambda s: subprocess.Popen([
-            "gsettings", "set", "org.gnome.desktop.peripherals.mouse",
-            "speed", str(round(s.get_value(), 2))]))
+        def _set_mouse_speed(s):
+            v = str(round(s.get_value(), 2))
+            subprocess.Popen(["gsettings", "set", "org.gnome.desktop.peripherals.mouse", "speed", v])
+            subprocess.Popen(["hyprctl", "keyword", "input:sensitivity", v])
+        spd_slider.connect("value-changed", _set_mouse_speed)
         spd_row.append(spd_slider)
         mouse_card.append(spd_row)
 
@@ -187,9 +195,11 @@ class MouseTouchpadPage(Gtk.Box):
         nat_row.append(nat_lbl)
         nat_sw = Gtk.Switch(); nat_sw.set_active(nat_scroll.lower() == "true")
         nat_sw.set_valign(Gtk.Align.CENTER)
-        nat_sw.connect("notify::active", lambda s, _: subprocess.Popen([
-            "gsettings", "set", "org.gnome.desktop.peripherals.mouse",
-            "natural-scroll", "true" if s.get_active() else "false"]))
+        def _set_nat_scroll(s, _):
+            v = "true" if s.get_active() else "false"
+            subprocess.Popen(["gsettings", "set", "org.gnome.desktop.peripherals.mouse", "natural-scroll", v])
+            subprocess.Popen(["hyprctl", "keyword", "input:natural_scroll", v])
+        nat_sw.connect("notify::active", _set_nat_scroll)
         nat_row.append(nat_sw)
         mouse_card.append(nat_row)
         self._root.append(mouse_card)
@@ -205,19 +215,24 @@ class MouseTouchpadPage(Gtk.Box):
         try: tp_slider.set_value(float(tp_speed))
         except: tp_slider.set_value(0.0)
         tp_slider.set_hexpand(True); tp_slider.set_draw_value(True)
-        tp_slider.connect("value-changed", lambda s: subprocess.Popen([
-            "gsettings", "set", "org.gnome.desktop.peripherals.touchpad",
-            "speed", str(round(s.get_value(), 2))]))
+        def _set_tp_speed(s):
+            v = str(round(s.get_value(), 2))
+            subprocess.Popen(["gsettings", "set", "org.gnome.desktop.peripherals.touchpad", "speed", v])
+        tp_slider.connect("value-changed", _set_tp_speed)
         tp_spd_row.append(tp_slider)
         tp_card.append(tp_spd_row)
 
-        for label, desc, key, schema, val in [
+        # Map (label, desc, gsettings_key, schema, hyprctl_keyword, current_val)
+        for label, desc, key, schema, hypr_key, val in [
             ("Tap to click",         "Click by tapping the touchpad",
-             "tap-to-click",         "org.gnome.desktop.peripherals.touchpad", tap),
+             "tap-to-click",         "org.gnome.desktop.peripherals.touchpad",
+             "input:touchpad:tap-to-click", tap),
             ("Natural scrolling",    "Scroll in the same direction as finger movement",
-             "natural-scroll",       "org.gnome.desktop.peripherals.touchpad", tp_nat),
+             "natural-scroll",       "org.gnome.desktop.peripherals.touchpad",
+             "input:touchpad:natural_scroll", tp_nat),
             ("Two-finger scrolling", "Use two fingers to scroll",
-             "two-finger-scrolling-enabled", "org.gnome.desktop.peripherals.touchpad", two_finger),
+             "two-finger-scrolling-enabled", "org.gnome.desktop.peripherals.touchpad",
+             None, two_finger),
         ]:
             row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
             lbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2); lbox.set_hexpand(True)
@@ -226,8 +241,12 @@ class MouseTouchpadPage(Gtk.Box):
             row.append(lbox)
             sw = Gtk.Switch(); sw.set_active(val.lower() == "true")
             sw.set_valign(Gtk.Align.CENTER)
-            sw.connect("notify::active", lambda s, _, k=key, sc=schema: subprocess.Popen([
-                "gsettings", "set", sc, k, "true" if s.get_active() else "false"]))
+            def _tp_toggle(s, _, k=key, sc=schema, hk=hypr_key):
+                v = "true" if s.get_active() else "false"
+                subprocess.Popen(["gsettings", "set", sc, k, v])
+                if hk:
+                    subprocess.Popen(["hyprctl", "keyword", hk, v])
+            sw.connect("notify::active", _tp_toggle)
             row.append(sw)
             tp_card.append(row)
 

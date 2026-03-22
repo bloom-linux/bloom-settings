@@ -105,16 +105,20 @@ def _firmware_pkgs():
 
 class KernelVersionDialog(Gtk.Window):
     """Fetches ALA version list and lets the user install a specific release."""
+    PAGE_SIZE = 20
 
     def __init__(self, parent, pkg, on_install):
         super().__init__()
         self.set_title(f"Choose version — {pkg}")
         self.set_transient_for(parent)
         self.set_modal(True)
-        self.set_default_size(540, 460)
+        self.set_default_size(540, 520)
         self.set_decorated(False)
         self._pkg        = pkg
         self._on_install = on_install
+        self._all        = []   # full list (newest first)
+        self._filtered   = []   # after search
+        self._page       = 0
 
         provider = Gtk.CssProvider()
         try:
@@ -127,25 +131,33 @@ class KernelVersionDialog(Gtk.Window):
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         outer.add_css_class("card")
-        outer.set_margin_top(0); outer.set_margin_bottom(0)
 
+        # Header
         hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        hdr.set_margin_top(16); hdr.set_margin_bottom(8)
+        hdr.set_margin_top(16); hdr.set_margin_bottom(6)
         hdr.set_margin_start(20); hdr.set_margin_end(14)
         title = Gtk.Label(label=f"Version history — {pkg}")
         title.add_css_class("card-name"); title.set_hexpand(True); title.set_xalign(0)
         hdr.append(title)
-        close = Gtk.Button(label="✕")
-        close.add_css_class("close-btn")
+        close = Gtk.Button(label="✕"); close.add_css_class("close-btn")
         close.connect("clicked", lambda _: self.close())
         hdr.append(close)
         outer.append(hdr)
 
-        note = Gtk.Label(label="Versions are fetched from the Arch Linux Archive (archive.archlinux.org)")
+        note = Gtk.Label(label="From the Arch Linux Archive — newest releases first")
         note.add_css_class("card-desc"); note.set_xalign(0)
-        note.set_margin_start(20); note.set_margin_bottom(10)
+        note.set_margin_start(20); note.set_margin_bottom(8)
         outer.append(note)
 
+        # Search
+        self._search = Gtk.SearchEntry()
+        self._search.set_placeholder_text("Search versions…")
+        self._search.set_margin_start(12); self._search.set_margin_end(12)
+        self._search.set_margin_bottom(8)
+        self._search.connect("search-changed", self._on_search)
+        outer.append(self._search)
+
+        # List
         self._list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self._list_box.set_margin_start(12); self._list_box.set_margin_end(12)
         spinner = Gtk.Spinner(); spinner.set_spinning(True)
@@ -153,10 +165,23 @@ class KernelVersionDialog(Gtk.Window):
         spinner.set_halign(Gtk.Align.CENTER)
         self._list_box.append(spinner)
 
-        sw = Gtk.ScrolledWindow()
-        sw.set_vexpand(True)
+        sw = Gtk.ScrolledWindow(); sw.set_vexpand(True)
         sw.set_child(self._list_box)
         outer.append(sw)
+
+        # Pagination bar
+        pager = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        pager.set_margin_top(8); pager.set_margin_bottom(12)
+        pager.set_margin_start(12); pager.set_margin_end(12)
+        pager.set_halign(Gtk.Align.CENTER)
+        self._prev_btn = Gtk.Button(label="← Prev"); self._prev_btn.add_css_class("act-btn")
+        self._prev_btn.connect("clicked", lambda _: self._change_page(-1))
+        self._next_btn = Gtk.Button(label="Next →"); self._next_btn.add_css_class("act-btn")
+        self._next_btn.connect("clicked", lambda _: self._change_page(1))
+        self._page_lbl = Gtk.Label(label=""); self._page_lbl.set_hexpand(True)
+        self._page_lbl.add_css_class("card-desc")
+        pager.append(self._prev_btn); pager.append(self._page_lbl); pager.append(self._next_btn)
+        outer.append(pager)
 
         self.set_child(outer)
         self.present()
@@ -164,26 +189,47 @@ class KernelVersionDialog(Gtk.Window):
 
     def _fetch(self):
         versions = fetch_ala_versions(self._pkg)
-        GLib.idle_add(self._populate, versions)
+        GLib.idle_add(self._populate_all, versions)
 
-    def _populate(self, versions):
+    def _populate_all(self, versions):
+        self._all = versions  # already newest-first from fetch_ala_versions
+        self._filtered = list(self._all)
+        self._page = 0
+        self._render()
+        return False
+
+    def _on_search(self, entry):
+        q = entry.get_text().lower().strip()
+        self._filtered = [(v, u) for v, u in self._all if q in v.lower()] if q else list(self._all)
+        self._page = 0
+        self._render()
+
+    def _change_page(self, delta):
+        max_page = max(0, (len(self._filtered) - 1) // self.PAGE_SIZE)
+        self._page = max(0, min(self._page + delta, max_page))
+        self._render()
+
+    def _render(self):
         clear_box(self._list_box)
-        if not versions:
-            lbl = Gtk.Label(label="Could not fetch version list — check internet connection.")
+        total = len(self._filtered)
+        if total == 0:
+            lbl = Gtk.Label(label="No versions match — try a different search term.")
             lbl.add_css_class("card-desc")
             lbl.set_margin_top(30); lbl.set_halign(Gtk.Align.CENTER)
             self._list_box.append(lbl)
-            return False
+            self._prev_btn.set_sensitive(False); self._next_btn.set_sensitive(False)
+            self._page_lbl.set_label("")
+            return
 
-        inst_ver = pkg_version(self._pkg, query_installed=True)
+        inst_ver  = pkg_version(self._pkg, query_installed=True)
+        start     = self._page * self.PAGE_SIZE
+        page_vers = self._filtered[start: start + self.PAGE_SIZE]
+        max_page  = max(0, (total - 1) // self.PAGE_SIZE)
 
-        for ver, url in versions:
+        for ver, url in page_vers:
             row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-            row.add_css_class("card")
-            row.set_margin_bottom(4)
-
-            left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-            left.set_hexpand(True)
+            row.add_css_class("card"); row.set_margin_bottom(4)
+            left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2); left.set_hexpand(True)
             top  = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             vl   = Gtk.Label(label=ver); vl.add_css_class("card-name"); vl.set_xalign(0)
             top.append(vl)
@@ -193,16 +239,17 @@ class KernelVersionDialog(Gtk.Window):
             left.append(top)
             ul = Gtk.Label(label=url); ul.add_css_class("card-pkg"); ul.set_xalign(0)
             ul.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
-            left.append(ul)
-            row.append(left)
-
-            btn = Gtk.Button(label="Install")
-            btn.add_css_class("act-btn")
+            left.append(ul); row.append(left)
+            btn = Gtk.Button(label="Install"); btn.add_css_class("act-btn")
             btn.set_valign(Gtk.Align.CENTER)
             btn.connect("clicked", lambda _, v=ver, u=url: self._install(v, u))
             row.append(btn)
             self._list_box.append(row)
-        return False
+
+        self._prev_btn.set_sensitive(self._page > 0)
+        self._next_btn.set_sensitive(self._page < max_page)
+        p1 = start + 1; p2 = min(start + self.PAGE_SIZE, total)
+        self._page_lbl.set_label(f"{p1}–{p2} of {total}")
 
     def _install(self, ver, url):
         self.close()

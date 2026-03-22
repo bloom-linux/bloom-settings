@@ -19,15 +19,18 @@ from common import (
 # ── Appearance Page ───────────────────────────────────────────────────────────
 
 class AppearancePage(Gtk.Box):
-    """Appearance page with persistent Apply/Revert bar for theme settings."""
+    """Appearance page with unified Apply/Discard bar for all theme settings."""
 
     def __init__(self, win_ref):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        self._win     = win_ref
-        self._saved   = {}   # last applied: gtk, icon, cursor, font
-        self._pending = {}   # current UI selection (not yet applied)
-        self._combos  = {}   # key → (combo_widget, themes_list)
-        self._font_btn = None
+        self._win         = win_ref
+        self._saved       = {}
+        self._pending     = {}
+        self._combos      = {}   # key → (combo_widget, themes_list)
+        self._color_btns  = {}   # palette key → Gtk.ColorButton
+        self._scheme_btns = {}   # "dark"/"light" → Gtk.Button
+        self._preset_btns = {}   # preset name → Gtk.Button
+        self._font_btn    = None
 
         # ── Scrollable settings area ──────────────────────────────────────────
         scroll = Gtk.ScrolledWindow()
@@ -43,7 +46,7 @@ class AppearancePage(Gtk.Box):
         scroll.set_child(self._inner)
         self.append(scroll)
 
-        # ── Always-visible Apply / Revert bar ────────────────────────────────
+        # ── Apply / Discard bar — only visible when there are pending changes ─
         self._action_sep = Gtk.Separator()
         self._action_sep.set_visible(False)
         self.append(self._action_sep)
@@ -58,18 +61,17 @@ class AppearancePage(Gtk.Box):
         info.set_hexpand(True); info.set_xalign(0)
         bar.append(info)
 
-        rev = Gtk.Button(label="Revert")
-        rev.add_css_class("act-btn")
-        rev.connect("clicked", lambda _: self._revert())
-        bar.append(rev)
+        discard_btn = Gtk.Button(label="Discard")
+        discard_btn.add_css_class("act-btn")
+        discard_btn.connect("clicked", lambda _: self._discard())
+        bar.append(discard_btn)
 
-        apb = Gtk.Button(label="Apply")
-        apb.add_css_class("act-btn"); apb.add_css_class("primary")
-        apb.connect("clicked", lambda _: self._apply())
-        bar.append(apb)
+        apply_btn = Gtk.Button(label="Apply")
+        apply_btn.add_css_class("act-btn"); apply_btn.add_css_class("primary")
+        apply_btn.connect("clicked", lambda _: self._apply_all())
+        bar.append(apply_btn)
 
         self.append(bar)
-
         threading.Thread(target=self._do_load, daemon=True).start()
 
     # ── Loading ───────────────────────────────────────────────────────────────
@@ -108,11 +110,30 @@ class AppearancePage(Gtk.Box):
                   cur_font, cur_scheme, gtk_themes, icon_themes, cursor_themes,
                   bloom_colors):
         clear_box(self._content)
-        self._combos = {}
-        self._font_btn = None
+        self._combos      = {}
+        self._color_btns  = {}
+        self._scheme_btns = {}
+        self._preset_btns = {}
+        self._font_btn    = None
 
-        # Initialise saved/pending state
-        self._saved   = {"gtk": cur_gtk, "icon": cur_icon, "cursor": cur_cursor, "font": cur_font}
+        scheme     = "dark" if "dark" in cur_scheme else "light"
+        cur_preset = bloom_colors.get("preset", "Bloom")
+
+        # Full saved state covers every knob on this page
+        self._saved = {
+            "scheme":   scheme,
+            "preset":   cur_preset,
+            "accent":   bloom_colors.get("accent",   "#B01828"),
+            "bg":       bloom_colors.get("bg",       "#0D0618"),
+            "surface":  bloom_colors.get("surface",  "#080312"),
+            "overlay":  bloom_colors.get("overlay",  "#120920"),
+            "text":     bloom_colors.get("text",     "#F0EEF4"),
+            "text_dim": bloom_colors.get("text_dim", "#88809A"),
+            "gtk":      cur_gtk,
+            "icon":     cur_icon,
+            "cursor":   cur_cursor,
+            "font":     cur_font,
+        }
         self._pending = self._saved.copy()
 
         # ── Wallpaper ─────────────────────────────────────────────────────────
@@ -147,18 +168,18 @@ class AppearancePage(Gtk.Box):
         scheme_card.add_css_class("card")
         sl = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2); sl.set_hexpand(True)
         sl.append(Gtk.Label(label="Dark / Light Mode", css_classes=["card-name"], xalign=0))
-        sl.append(Gtk.Label(label="Affects GTK apps, Qt apps, bloom popups and waybar",
+        sl.append(Gtk.Label(label="Affects GTK apps, Qt apps, bloom popups and the bar",
                             css_classes=["card-desc"], xalign=0))
         scheme_card.append(sl)
         dark_btn  = Gtk.Button(label="  Dark");  dark_btn.add_css_class("act-btn")
         light_btn = Gtk.Button(label="  Light"); light_btn.add_css_class("act-btn")
-        is_dark = "dark" in cur_scheme
-        if is_dark:  dark_btn.add_css_class("primary")
-        else:        light_btn.add_css_class("primary")
+        if scheme == "dark":  dark_btn.add_css_class("primary")
+        else:                 light_btn.add_css_class("primary")
         dark_btn.set_valign(Gtk.Align.CENTER)
         light_btn.set_valign(Gtk.Align.CENTER)
-        dark_btn.connect("clicked",  lambda _, d=dark_btn,  l=light_btn: self._set_scheme("dark",  d, l))
-        light_btn.connect("clicked", lambda _, d=dark_btn,  l=light_btn: self._set_scheme("light", d, l))
+        dark_btn.connect("clicked",  lambda _: self._set_pending("scheme", "dark"))
+        light_btn.connect("clicked", lambda _: self._set_pending("scheme", "light"))
+        self._scheme_btns = {"dark": dark_btn, "light": light_btn}
         scheme_card.append(dark_btn); scheme_card.append(light_btn)
         self._content.append(scheme_card)
 
@@ -167,40 +188,22 @@ class AppearancePage(Gtk.Box):
         presets_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         presets_card.add_css_class("card")
         presets_card.append(Gtk.Label(
-            label="Each preset sets a complete color palette. Dark/Light toggle applies the matching variant.",
+            label="Full color palette presets — select to preview, then click Apply to save.",
             css_classes=["card-desc"], xalign=0))
-        swatches = Gtk.FlowBox()
-        swatches.set_max_children_per_line(5)
-        swatches.set_selection_mode(Gtk.SelectionMode.NONE)
-        swatches.set_margin_top(8)
-        cur_preset = bloom_colors.get("preset", "Bloom")
-        for pname in THEME_PRESETS:
-            sb = Gtk.Button(label=pname)
-            sb.add_css_class("act-btn")
-            if pname == cur_preset:
-                sb.add_css_class("primary")
-            sb.connect("clicked", lambda _, n=pname: self._apply_preset(n))
-            swatches.append(sb)
-        presets_card.append(swatches)
-
-        # Custom accent color
-        custom_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        custom_row.set_margin_top(8)
-        custom_lbl = Gtk.Label(label="Custom accent:")
-        custom_lbl.add_css_class("card-desc"); custom_row.append(custom_lbl)
-        color_btn = Gtk.ColorButton()
-        color_btn.set_valign(Gtk.Align.CENTER)
-        try:
-            rgba_val = Gdk.RGBA()
-            rgba_val.parse(bloom_colors["accent"])
-            color_btn.set_rgba(rgba_val)
-        except Exception: pass
-        custom_apply = Gtk.Button(label="Apply Accent Only"); custom_apply.add_css_class("act-btn")
-        custom_apply.set_valign(Gtk.Align.CENTER)
-        custom_apply.connect("clicked", lambda _, cb=color_btn:
-                             self._apply_accent(self._rgba_to_hex(cb.get_rgba())))
-        custom_row.append(color_btn); custom_row.append(custom_apply)
-        presets_card.append(custom_row)
+        swatches_flow = Gtk.FlowBox()
+        swatches_flow.set_max_children_per_line(5)
+        swatches_flow.set_selection_mode(Gtk.SelectionMode.NONE)
+        swatches_flow.set_column_spacing(8)
+        swatches_flow.set_row_spacing(8)
+        swatches_flow.set_margin_top(10)
+        self._preset_btns = {}
+        for pname, pdata in THEME_PRESETS.items():
+            variant = pdata.get(scheme, pdata.get("dark", {}))
+            btn = self._make_swatch_btn(pname, variant, pname == cur_preset)
+            btn.connect("clicked", lambda _, n=pname: self._set_pending_preset(n))
+            swatches_flow.append(btn)
+            self._preset_btns[pname] = btn
+        presets_card.append(swatches_flow)
         self._content.append(presets_card)
 
         # ── Custom Palette ────────────────────────────────────────────────────
@@ -208,10 +211,11 @@ class AppearancePage(Gtk.Box):
         palette_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         palette_card.add_css_class("card")
         palette_card.append(Gtk.Label(
-            label="Fine-tune individual colors. Changes apply immediately.",
+            label="Fine-tune individual colors — changes are staged until you click Apply.",
             css_classes=["card-desc"], xalign=0))
         palette_card.set_margin_top(2)
         for color_key, color_label in [
+            ("accent",   "Accent"),
             ("bg",       "Background"),
             ("surface",  "Surface / Sidebar"),
             ("overlay",  "Overlay / Popups"),
@@ -226,19 +230,21 @@ class AppearancePage(Gtk.Box):
             cb = Gtk.ColorButton()
             cb.set_valign(Gtk.Align.CENTER)
             try:
-                rv = Gdk.RGBA(); rv.parse(bloom_colors[color_key]); cb.set_rgba(rv)
+                rv = Gdk.RGBA()
+                rv.parse(bloom_colors.get(color_key, "#000000"))
+                cb.set_rgba(rv)
             except Exception: pass
-            ap = Gtk.Button(label="Apply"); ap.add_css_class("act-btn"); ap.set_valign(Gtk.Align.CENTER)
-            ap.connect("clicked", lambda _, k=color_key, c=cb:
-                       self._apply_palette_color(k, self._rgba_to_hex(c.get_rgba())))
-            row.append(cb); row.append(ap)
+            cb.connect("color-set", lambda btn, k=color_key:
+                       self._set_pending(k, self._rgba_to_hex(btn.get_rgba())))
+            self._color_btns[color_key] = cb
+            row.append(cb)
             palette_card.append(row)
 
         reset_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         reset_row.set_margin_top(8)
         reset_btn = Gtk.Button(label="Reset to scheme defaults")
         reset_btn.add_css_class("act-btn")
-        reset_btn.connect("clicked", lambda _: self._reset_palette())
+        reset_btn.connect("clicked", lambda _: self._pending_reset_palette())
         reset_row.append(reset_btn)
         palette_card.append(reset_row)
         self._content.append(palette_card)
@@ -259,7 +265,7 @@ class AppearancePage(Gtk.Box):
         font_btn.set_valign(Gtk.Align.CENTER)
         if cur_font:
             font_btn.set_font(cur_font)
-        font_btn.connect("font-set", self._on_font_changed)
+        font_btn.connect("font-set", lambda b: self._set_pending("font", b.get_font()))
         self._font_btn = font_btn
         font_card.append(font_btn)
         self._content.append(font_card)
@@ -279,18 +285,63 @@ class AppearancePage(Gtk.Box):
                 combo.set_selected(themes.index(current))
             self._combos[key] = (combo, themes)
             combo.connect("notify::selected",
-                          lambda c, _, k=key, ts=themes: self._on_theme_changed(k, ts[c.get_selected()]))
+                          lambda c, _, k=key, ts=themes: self._set_pending(k, ts[c.get_selected()]))
             card.append(combo)
         else:
             card.append(Gtk.Label(label="No themes found", css_classes=["card-desc"]))
         return card
 
-    def _on_theme_changed(self, key, value):
+    # ── Pending state management ──────────────────────────────────────────────
+
+    def _set_pending(self, key, value):
         self._pending[key] = value
+        # Immediately update scheme buttons so the selection is visually clear
+        if key == "scheme":
+            for s, b in self._scheme_btns.items():
+                if s == value: b.add_css_class("primary")
+                else:          b.remove_css_class("primary")
         self._mark_dirty()
 
-    def _on_font_changed(self, btn):
-        self._pending["font"] = btn.get_font()
+    def _set_pending_preset(self, preset_name):
+        """Stage a preset: marks all palette colors from the preset variant as pending."""
+        scheme  = self._pending.get("scheme", "dark")
+        preset  = THEME_PRESETS.get(preset_name)
+        if not preset:
+            return
+        variant = preset.get(scheme, preset.get("dark", {}))
+        self._pending["preset"] = preset_name
+        for k in ("accent", "bg", "surface", "overlay", "text", "text_dim"):
+            if k in variant:
+                self._pending[k] = variant[k]
+                # Update color button so user sees the palette preview immediately
+                if k in self._color_btns:
+                    try:
+                        rv = Gdk.RGBA(); rv.parse(variant[k])
+                        self._color_btns[k].set_rgba(rv)
+                    except Exception: pass
+        # Highlight the selected preset button
+        for n, b in self._preset_btns.items():
+            if n == preset_name: b.add_css_class("primary")
+            else:                b.remove_css_class("primary")
+        self._mark_dirty()
+
+    def _pending_reset_palette(self):
+        """Stage a reset of all palette colors to scheme defaults."""
+        dark = self._pending.get("scheme", "dark") == "dark"
+        defs = {
+            "bg":       "#0D0618" if dark else "#F5F3F7",
+            "surface":  "#080312" if dark else "#FFFEFF",
+            "overlay":  "#120920" if dark else "#EDE9F0",
+            "text":     "#F0EEF4" if dark else "#1A1420",
+            "text_dim": "#88809A" if dark else "#6B6378",
+        }
+        for k, v in defs.items():
+            self._pending[k] = v
+            if k in self._color_btns:
+                try:
+                    rv = Gdk.RGBA(); rv.parse(v)
+                    self._color_btns[k].set_rgba(rv)
+                except Exception: pass
         self._mark_dirty()
 
     def _mark_dirty(self):
@@ -298,66 +349,163 @@ class AppearancePage(Gtk.Box):
         self._action_bar.set_visible(dirty)
         self._action_sep.set_visible(dirty)
 
-    # ── Apply / Revert ────────────────────────────────────────────────────────
+    # ── Apply / Discard ───────────────────────────────────────────────────────
 
-    def _apply(self):
-        gtk    = self._pending.get("gtk",    "")
-        icon   = self._pending.get("icon",   "")
-        cursor = self._pending.get("cursor", "")
-        font   = self._pending.get("font",   "")
+    def _apply_all(self):
+        p = self._pending
+        s = self._saved
 
-        # Write GTK 3 + 4 settings.ini with all changed values at once
+        # ── Bloom colors (scheme, preset, palette) ────────────────────────────
+        color_keys    = ("scheme", "preset", "accent", "bg", "surface", "overlay", "text", "text_dim")
+        bloom_changes = {k: p[k] for k in color_keys if p.get(k) != s.get(k)}
+        if bloom_changes:
+            self._update_bloom_colors(bloom_changes)
+
+        scheme_changed = p.get("scheme") != s.get("scheme")
+        scheme         = p.get("scheme", "dark")
+
+        if scheme_changed:
+            val = "prefer-dark" if scheme == "dark" else "prefer-light"
+            subprocess.Popen(["gsettings", "set", "org.gnome.desktop.interface", "color-scheme", val])
+            # Auto-switch GTK theme dark/light variant if one exists
+            cur_gtk = p.get("gtk", "")
+            try:
+                themes = list_gtk_themes()
+                if scheme == "dark" and not cur_gtk.endswith("-dark") and cur_gtk + "-dark" in themes:
+                    self._pending["gtk"] = cur_gtk + "-dark"
+                    subprocess.Popen(["gsettings", "set", "org.gnome.desktop.interface",
+                                       "gtk-theme", cur_gtk + "-dark"])
+                elif scheme == "light" and cur_gtk.endswith("-dark"):
+                    light = cur_gtk[:-5]
+                    if light in themes:
+                        self._pending["gtk"] = light
+                        subprocess.Popen(["gsettings", "set", "org.gnome.desktop.interface",
+                                           "gtk-theme", light])
+            except Exception: pass
+            self._write_qt_scheme(scheme)
+            GLib.idle_add(_reload_app_css)
+
+        # ── GTK theme / icon / cursor / font ──────────────────────────────────
+        gtk    = p.get("gtk",    "")
+        icon   = p.get("icon",   "")
+        cursor = p.get("cursor", "")
+        font   = p.get("font",   "")
+
         _write_gtk_ini_all(
-            gtk    = gtk    if gtk    != self._saved.get("gtk")    else None,
-            icon   = icon   if icon   != self._saved.get("icon")   else None,
-            cursor = cursor if cursor != self._saved.get("cursor") else None,
-            font   = font   if font   != self._saved.get("font")   else None,
+            gtk    = gtk    if gtk    != s.get("gtk")    else None,
+            icon   = icon   if icon   != s.get("icon")   else None,
+            cursor = cursor if cursor != s.get("cursor") else None,
+            font   = font   if font   != s.get("font")   else None,
         )
 
-        if gtk and gtk != self._saved.get("gtk"):
+        if gtk and gtk != s.get("gtk"):
             subprocess.Popen(["gsettings", "set", "org.gnome.desktop.interface", "gtk-theme", gtk])
 
-        if icon and icon != self._saved.get("icon"):
+        if icon and icon != s.get("icon"):
             subprocess.Popen(["gsettings", "set", "org.gnome.desktop.interface", "icon-theme", icon])
-            _write_gtk_ini_all(icon=icon)
+            self._write_qt_icon_theme(icon)
+            self._write_rofi_icon_theme(icon)
             subprocess.Popen(["bloom-generate-icons"])
-            # Restart waybar so system-tray and GTK icon theme reload
-            subprocess.Popen(["bash", "-c", "pkill waybar; sleep 0.5; waybar &"])
 
-        if cursor and cursor != self._saved.get("cursor"):
+        if cursor and cursor != s.get("cursor"):
             subprocess.Popen(["gsettings", "set", "org.gnome.desktop.interface", "cursor-theme", cursor])
             subprocess.Popen(["gsettings", "set", "org.gnome.desktop.interface", "cursor-size", "24"])
             subprocess.Popen(["hyprctl", "setcursor", cursor, "24"])
             _write_cursor_default(cursor)
             subprocess.Popen(["bloom-generate-cursors"])
 
-        if font and font != self._saved.get("font"):
+        if font and font != s.get("font"):
             subprocess.Popen(["gsettings", "set", "org.gnome.desktop.interface", "font-name", font])
             subprocess.Popen(["gsettings", "set", "org.gnome.desktop.interface",
                                "monospace-font-name", font])
             self._update_bloom_colors({"font": font})
-            subprocess.Popen(["bloom-generate-colors", "--no-reload"])
+
+        # Regenerate colors + restart the bar in one shot
+        subprocess.Popen(["bloom-generate-colors"])
 
         self._saved = self._pending.copy()
         self._mark_dirty()
 
-    def _revert(self):
+    def _discard(self):
         self._pending = self._saved.copy()
+        s = self._saved
+
+        # Restore scheme buttons
+        for sv, btn in self._scheme_btns.items():
+            if sv == s.get("scheme"): btn.add_css_class("primary")
+            else:                     btn.remove_css_class("primary")
+
+        # Restore preset buttons
+        for name, btn in self._preset_btns.items():
+            if name == s.get("preset"): btn.add_css_class("primary")
+            else:                       btn.remove_css_class("primary")
+
+        # Restore color pickers
+        for k, cb in self._color_btns.items():
+            val = s.get(k, "")
+            if val:
+                try:
+                    rv = Gdk.RGBA(); rv.parse(val); cb.set_rgba(rv)
+                except Exception: pass
+
+        # Restore theme combo dropdowns
         for key, (combo, themes) in self._combos.items():
-            val = self._saved.get(key, "")
+            val = s.get(key, "")
             if val in themes:
                 combo.set_selected(themes.index(val))
-        if self._font_btn and self._saved.get("font"):
-            self._font_btn.set_font(self._saved["font"])
+
+        # Restore font button
+        if self._font_btn and s.get("font"):
+            self._font_btn.set_font(s["font"])
+
         self._mark_dirty()
 
-    # ── Immediate actions (no pending state) ─────────────────────────────────
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _make_swatch_btn(self, name, variant, selected):
+        """Create a visual color swatch button for a theme preset."""
+        def _hex2rgb(h):
+            h = h.lstrip("#")
+            return tuple(int(h[i:i+2], 16) / 255.0 for i in (0, 2, 4))
+
+        bg_c  = variant.get("bg",      "#0D0618")
+        sur_c = variant.get("surface", "#080312")
+        acc_c = variant.get("accent",  "#B01828")
+        txt_c = variant.get("text",    "#F0EEF4")
+
+        btn = Gtk.Button()
+        btn.add_css_class("act-btn")
+        if selected: btn.add_css_class("primary")
+
+        vbox   = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        swatch = Gtk.DrawingArea()
+        swatch.set_content_width(96)
+        swatch.set_content_height(54)
+
+        def make_draw(bg, sur, acc, txt):
+            def draw(area, cr, w, h):
+                r, g, b = _hex2rgb(bg);  cr.set_source_rgb(r, g, b);  cr.paint()
+                r, g, b = _hex2rgb(sur); cr.set_source_rgb(r, g, b)
+                cr.rectangle(0, 0, w * 0.22, h); cr.fill()
+                r, g, b = _hex2rgb(acc); cr.set_source_rgb(r, g, b)
+                cr.rectangle(0, h - 7, w, 7); cr.fill()
+                r, g, b = _hex2rgb(txt); cr.set_source_rgba(r, g, b, 0.35)
+                for yi in [0.28, 0.48, 0.68]:
+                    cr.rectangle(w * 0.28, h * yi, w * 0.55, 4); cr.fill()
+            return draw
+
+        swatch.set_draw_func(make_draw(bg_c, sur_c, acc_c, txt_c))
+        vbox.append(swatch)
+        lbl = Gtk.Label(label=name); lbl.add_css_class("card-desc")
+        vbox.append(lbl)
+        btn.set_child(vbox)
+        return btn
 
     def _rgba_to_hex(self, rgba):
-        r = int(rgba.red   * 255)
-        g = int(rgba.green * 255)
-        b = int(rgba.blue  * 255)
-        return f"#{r:02X}{g:02X}{b:02X}"
+        return "#{:02X}{:02X}{:02X}".format(
+            int(rgba.red * 255), int(rgba.green * 255), int(rgba.blue * 255))
+
+    # ── Wallpaper (immediate — live preview is good UX) ───────────────────────
 
     def _pick_wallpaper(self):
         native = Gtk.FileChooserNative(
@@ -384,139 +532,63 @@ class AppearancePage(Gtk.Box):
         os.makedirs(cfg, exist_ok=True)
         open(os.path.join(cfg, "wallpaper"), "w").write(path)
 
-    def _set_scheme(self, scheme, dark_btn, light_btn):
-        """Toggle dark/light mode across GTK, Qt and bloom."""
-        try:
-            self._update_bloom_colors({"scheme": scheme})
-            # Re-apply active preset palette for the new scheme (excluding accent override)
-            try:
-                colors = read_bloom_colors()
-                preset_name = colors.get("preset", "Bloom")
-                preset = THEME_PRESETS.get(preset_name)
-                if preset:
-                    variant = preset.get(scheme, preset.get("dark", {}))
-                    # Apply only palette colors (bg/surface/overlay/text/text_dim), keep user accent if customized
-                    palette_only = {k: v for k, v in variant.items() if k != "accent"}
-                    self._update_bloom_colors(palette_only)
-            except Exception:
-                pass
-            dark_btn.remove_css_class("primary"); light_btn.remove_css_class("primary")
-            (dark_btn if scheme == "dark" else light_btn).add_css_class("primary")
-            # GTK color-scheme via gsettings
-            val = "prefer-dark" if scheme == "dark" else "prefer-light"
-            subprocess.Popen(["gsettings", "set", "org.gnome.desktop.interface", "color-scheme", val])
-            # Switch GTK theme dark/light variant if available
-            cur = gsettings_get("org.gnome.desktop.interface", "gtk-theme", "Adwaita-dark")
-            try:
-                themes = list_gtk_themes()
-                if scheme == "dark" and not cur.endswith("-dark") and cur + "-dark" in themes:
-                    subprocess.Popen(["gsettings", "set", "org.gnome.desktop.interface",
-                                       "gtk-theme", cur + "-dark"])
-                elif scheme == "light" and cur.endswith("-dark"):
-                    light_theme = cur[:-5]
-                    if light_theme in themes:
-                        subprocess.Popen(["gsettings", "set", "org.gnome.desktop.interface",
-                                           "gtk-theme", light_theme])
-            except Exception:
-                pass
-            # Qt5ct / Qt6ct
-            self._write_qt_scheme(scheme)
-            # Reload app CSS immediately so settings window follows theme
-            GLib.idle_add(_reload_app_css)
-            subprocess.Popen(["bloom-generate-colors"])
-        except Exception as e:
-            print(f"bloom-settings: _set_scheme error: {e}", file=sys.stderr)
-
-    def _apply_preset(self, preset_name):
-        try:
-            colors = read_bloom_colors()
-            scheme = colors.get("scheme", "dark")
-            preset = THEME_PRESETS.get(preset_name)
-            if not preset:
-                return
-            variant = preset.get(scheme, preset.get("dark", {}))
-            overrides = dict(variant)
-            overrides["preset"] = preset_name
-            self._update_bloom_colors(overrides)
-            GLib.idle_add(_reload_app_css)
-            subprocess.Popen(["bloom-generate-colors"])
-        except Exception as e:
-            print(f"bloom-settings: _apply_preset error: {e}", file=sys.stderr)
-
-    def _apply_accent(self, hex_color):
-        try:
-            self._update_bloom_colors({"accent": hex_color})
-            GLib.idle_add(_reload_app_css)
-            subprocess.Popen(["bloom-generate-colors"])
-        except Exception as e:
-            print(f"bloom-settings: _apply_accent error: {e}", file=sys.stderr)
-
-    def _apply_palette_color(self, key, hex_color):
-        try:
-            self._update_bloom_colors({key: hex_color})
-            GLib.idle_add(_reload_app_css)
-            subprocess.Popen(["bloom-generate-colors"])
-        except Exception as e:
-            print(f"bloom-settings: _apply_palette_color error: {e}", file=sys.stderr)
-
-    def _reset_palette(self):
-        try:
-            colors = read_bloom_colors()
-            dark = colors.get("scheme", "dark") == "dark"
-            defs = {
-                "bg":       "#0D0618" if dark else "#F5F3F7",
-                "surface":  "#080312" if dark else "#FFFEFF",
-                "overlay":  "#120920" if dark else "#EDE9F0",
-                "text":     "#F0EEF4" if dark else "#1A1420",
-                "text_dim": "#88809A" if dark else "#6B6378",
-            }
-            self._update_bloom_colors(defs)
-            GLib.idle_add(_reload_app_css)
-            subprocess.Popen(["bloom-generate-colors"])
-        except Exception as e:
-            print(f"bloom-settings: _reset_palette error: {e}", file=sys.stderr)
+    # ── Qt / Rofi / Colors helpers ────────────────────────────────────────────
 
     def _write_qt_scheme(self, scheme):
-        """Update qt5ct/qt6ct style for dark/light (creates config if missing)."""
+        """Update qt5ct/qt6ct style for dark/light."""
         import configparser as _cp
-        style = "kvantum-dark" if scheme == "dark" else "kvantum"
-        kvantum_theme = "KvDark" if scheme == "dark" else "KvFlat"
-        configs = [
-            (os.path.expanduser("~/.config/qt5ct/qt5ct.conf"), "qt5ct"),
-            (os.path.expanduser("~/.config/qt6ct/qt6ct.conf"), "qt6ct"),
-        ]
-        for path, _ in configs:
+        style         = "kvantum-dark" if scheme == "dark" else "kvantum"
+        kvantum_theme = "KvDark"       if scheme == "dark" else "KvFlat"
+        for path in [os.path.expanduser("~/.config/qt5ct/qt5ct.conf"),
+                     os.path.expanduser("~/.config/qt6ct/qt6ct.conf")]:
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            cp = _cp.RawConfigParser()
-            cp.optionxform = str
+            cp = _cp.RawConfigParser(); cp.optionxform = str
             if os.path.exists(path):
-                try:
-                    cp.read(path)
-                except Exception:
-                    pass
-            if not cp.has_section("Appearance"):
-                cp.add_section("Appearance")
+                try: cp.read(path)
+                except Exception: pass
+            if not cp.has_section("Appearance"): cp.add_section("Appearance")
             cp.set("Appearance", "style", style)
             try:
-                with open(path, "w") as f:
-                    cp.write(f, space_around_delimiters=False)
-            except Exception:
-                pass
-        # Update Kvantum theme
+                with open(path, "w") as f: cp.write(f, space_around_delimiters=False)
+            except Exception: pass
         kv_path = os.path.expanduser("~/.config/Kvantum/kvantum.kvconfig")
         os.makedirs(os.path.dirname(kv_path), exist_ok=True)
         kv = _cp.RawConfigParser(); kv.optionxform = str
         if os.path.exists(kv_path):
             try: kv.read(kv_path)
             except Exception: pass
-        if not kv.has_section("General"):
-            kv.add_section("General")
+        if not kv.has_section("General"): kv.add_section("General")
         kv.set("General", "theme", kvantum_theme)
         try:
-            with open(kv_path, "w") as f:
-                kv.write(f, space_around_delimiters=False)
-        except Exception:
-            pass
+            with open(kv_path, "w") as f: kv.write(f, space_around_delimiters=False)
+        except Exception: pass
+
+    def _write_qt_icon_theme(self, theme):
+        """Write icon theme into qt5ct and qt6ct config."""
+        import configparser as _cp
+        for path in [os.path.expanduser("~/.config/qt5ct/qt5ct.conf"),
+                     os.path.expanduser("~/.config/qt6ct/qt6ct.conf")]:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            cp = _cp.RawConfigParser(); cp.optionxform = str
+            if os.path.exists(path):
+                try: cp.read(path)
+                except Exception: pass
+            if not cp.has_section("Appearance"): cp.add_section("Appearance")
+            cp.set("Appearance", "icon_theme", theme)
+            try:
+                with open(path, "w") as f: cp.write(f, space_around_delimiters=False)
+            except Exception: pass
+
+    def _write_rofi_icon_theme(self, theme):
+        """Update icon-theme in rofi config.rasi."""
+        path = os.path.expanduser("~/.config/rofi/config.rasi")
+        if not os.path.exists(path):
+            return
+        try:
+            content = open(path).read()
+            new = re.sub(r'icon-theme:\s*"[^"]*"', f'icon-theme: "{theme}"', content)
+            open(path, "w").write(new)
+        except Exception: pass
 
     def _update_bloom_colors(self, overrides):
         """Merge overrides into ~/.config/bloom/colors.conf."""
@@ -581,6 +653,13 @@ class DisplayPage(Gtk.Box):
 
     def _populate(self, monitors, nl_enabled, nl_temp):
         clear_box(self._root)
+
+        # ── Visual monitor arrangement canvas ─────────────────────────────────
+        if len(monitors) >= 2:
+            canvas = self._make_monitor_canvas(monitors)
+            if canvas:
+                self._root.append(make_section("MONITOR LAYOUT"))
+                self._root.append(canvas)
 
         for mon in monitors:
             self._root.append(make_section(f"MONITOR — {mon.get('name', '?')}"))
@@ -744,6 +823,71 @@ class DisplayPage(Gtk.Box):
         else:
             cmd    = f"hyprctl keyword monitor {name},preferred,{pos},{scale},transform,{transform}"
         subprocess.Popen(["bash", "-c", cmd])
+
+    def _make_monitor_canvas(self, monitors):
+        """Render a proportional top-down view of all connected monitors."""
+        def _hex2rgb(h):
+            h = h.lstrip("#")
+            return tuple(int(h[i:i+2], 16) / 255.0 for i in (0, 2, 4))
+
+        min_x = min(m.get("x", 0) for m in monitors)
+        min_y = min(m.get("y", 0) for m in monitors)
+        max_x = max(m.get("x", 0) + m.get("width",  1920) for m in monitors)
+        max_y = max(m.get("y", 0) + m.get("height", 1080) for m in monitors)
+        total_w = max(max_x - min_x, 1)
+        total_h = max(max_y - min_y, 1)
+
+        mons = [(m.get("name", "?"),
+                 m.get("x", 0) - min_x,
+                 m.get("y", 0) - min_y,
+                 m.get("width", 1920),
+                 m.get("height", 1080),
+                 bool(m.get("focused", False)))
+                for m in monitors]
+
+        da = Gtk.DrawingArea()
+        da.set_size_request(-1, 130)
+        da.add_css_class("card")
+
+        def draw(area, cr, w, h):
+            pad = 14
+            aw = w - 2 * pad
+            ah = h - 2 * pad
+            scale = min(aw / total_w, ah / total_h)
+            ox = pad + (aw - total_w * scale) / 2
+            oy = pad + (ah - total_h * scale) / 2
+
+            for name, mx, my, mw, mh, focused in mons:
+                rx = ox + mx * scale
+                ry = oy + my * scale
+                rw = mw * scale
+                rh = mh * scale
+
+                # Fill
+                if focused:
+                    cr.set_source_rgb(0.20, 0.09, 0.33)
+                else:
+                    cr.set_source_rgb(0.10, 0.05, 0.18)
+                cr.rectangle(rx, ry, rw, rh)
+                cr.fill()
+
+                # Border
+                cr.set_source_rgb(0.50, 0.22, 0.75)
+                cr.set_line_width(1.5)
+                cr.rectangle(rx + 0.75, ry + 0.75, rw - 1.5, rh - 1.5)
+                cr.stroke()
+
+                # Monitor name label
+                cr.set_source_rgb(0.90, 0.88, 0.95)
+                cr.select_font_face("monospace", 0, 0)
+                font_sz = max(9.0, min(14.0, rh * 0.18))
+                cr.set_font_size(font_sz)
+                ext = cr.text_extents(name)
+                cr.move_to(rx + (rw - ext.width) / 2, ry + (rh + ext.height) / 2)
+                cr.show_text(name)
+
+        da.set_draw_func(draw)
+        return da
 
     def _toggle_nl(self, enable):
         temp = int(self._nl_slider.get_value())

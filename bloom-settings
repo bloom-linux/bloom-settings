@@ -6,6 +6,9 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, Gdk, GLib
 import sys, os
 
+# Run natively on Wayland
+os.environ.setdefault("GDK_BACKEND", "wayland")
+
 # Add lib directory to path for page modules
 sys.path.insert(0, "/usr/local/lib/bloom-settings")
 
@@ -19,6 +22,7 @@ from page_applications import DefaultAppsPage
 from page_system import KernelsPage, DriversPage, LocalePage, PowerPage, NotificationsPage, UpdatesPage, AboutPage
 from page_input import KeyboardPage, MouseTouchpadPage, AccessibilityPage
 from page_startup import StartupSessionPage, PrivacySecurityPage
+from page_files import FilesPage
 
 # Each entry: (icon, name, factory) for pages, (None, name, None) for category headers
 PAGES = [
@@ -47,6 +51,8 @@ PAGES = [
     ("󰒡", "Privacy & Security", lambda w: PrivacySecurityPage(w)),
     ("󰏖", "Updates",            lambda w: UpdatesPage(w)),
     ("", "About",              lambda w: AboutPage()),
+    (None, "TOOLS", None),
+    ("󰍉", "File Search",       lambda w: FilesPage(w)),
 ]
 
 
@@ -79,6 +85,13 @@ def on_activate(app):
     logo = Gtk.Label(label="⚙  Settings")
     logo.add_css_class("sidebar-title"); logo.set_xalign(0)
     sidebar.append(logo)
+
+    # Search box
+    search_entry = Gtk.SearchEntry()
+    search_entry.set_placeholder_text("Search…")
+    search_entry.set_margin_start(10); search_entry.set_margin_end(10)
+    search_entry.set_margin_bottom(6)
+    sidebar.append(search_entry)
 
     nav_scroll = Gtk.ScrolledWindow()
     nav_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -145,6 +158,47 @@ def on_activate(app):
 
         if first_page is None:
             first_page = (btn, name, loader)
+
+    # Wire up sidebar search — filters nav buttons and category labels
+    _all_nav_items = list(nav_inner)  # snapshot after population
+
+    def _on_sidebar_search(entry):
+        q = entry.get_text().lower().strip()
+        if not q:
+            for child in _all_nav_items:
+                child.set_visible(True)
+            return
+        # Show only buttons whose label contains the query; hide category labels
+        # that have no visible buttons below them
+        visible_names = set()
+        for b in btns:
+            row_child = b.get_child()
+            label_text = ""
+            if row_child:
+                c = row_child.get_first_child()
+                while c:
+                    if hasattr(c, "get_label"):
+                        label_text += " " + (c.get_label() or "")
+                    c = c.get_next_sibling()
+            if q in label_text.lower():
+                b.set_visible(True)
+                visible_names.add(b)
+            else:
+                b.set_visible(False)
+
+        # Show/hide category labels based on whether any following btn is visible
+        children = list(_all_nav_items)
+        for i, child in enumerate(children):
+            if child in btns:
+                continue  # already handled
+            # It's a category label — show if any subsequent btn is visible
+            has_visible = any(
+                c for c in children[i+1:]
+                if c in btns and c.get_visible()
+            )
+            child.set_visible(has_visible)
+
+    search_entry.connect("search-changed", _on_sidebar_search)
 
     if first_page and btns:
         btn, name, loader = first_page

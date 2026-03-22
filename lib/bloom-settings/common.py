@@ -487,9 +487,12 @@ def text_entry(placeholder="", password=False, css="input-field"):
     if password:
         e = Gtk.PasswordEntry()
         e.set_show_peek_icon(True)
+        if placeholder:
+            e.set_property("placeholder-text", placeholder)
     else:
         e = Gtk.Entry()
-        e.set_placeholder_text(placeholder)
+        if placeholder:
+            e.set_placeholder_text(placeholder)
     e.add_css_class(css)
     return e
 
