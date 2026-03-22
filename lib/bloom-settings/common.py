@@ -678,9 +678,8 @@ def _write_gtk_ini_all(gtk=None, icon=None, cursor=None, font=None, scheme=None)
             cp.set("Settings", "gtk-cursor-theme-size", "24")
         if font   is not None: cp.set("Settings", "gtk-font-name",        font)
         if scheme is not None:
-            prefer_dark = "true" if scheme == "dark" else "false"
+            prefer_dark = "1" if scheme == "dark" else "0"
             cp.set("Settings", "gtk-application-prefer-dark-theme", prefer_dark)
-            cp.set("Settings", "gtk-color-scheme", "")  # clear any legacy override
         with open(path, "w") as f:
             cp.write(f, space_around_delimiters=False)
 
