@@ -522,6 +522,7 @@ class AppearancePage(Gtk.Box):
     # ── Wallpaper (immediate — live preview is good UX) ───────────────────────
 
     def _pick_wallpaper(self):
+        from gi.repository import Gio
         native = Gtk.FileChooserNative(
             title="Choose Wallpaper", transient_for=self._win,
             action=Gtk.FileChooserAction.OPEN,
@@ -530,6 +531,9 @@ class AppearancePage(Gtk.Box):
         f = Gtk.FileFilter(); f.set_name("Images")
         for m in ["image/jpeg", "image/png", "image/webp", "image/bmp"]: f.add_mime_type(m)
         native.set_filter(f)
+        wp_dir = "/usr/share/wallpapers/bloom"
+        if os.path.isdir(wp_dir):
+            native.set_current_folder(Gio.File.new_for_path(wp_dir))
         native.connect("response", self._on_wp_chosen)
         native.show()
         self._file_dlg = native
