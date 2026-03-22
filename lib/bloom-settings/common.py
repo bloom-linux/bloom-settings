@@ -43,22 +43,26 @@ def _load_theme_colors():
     }
 
 def _make_css(c):
-    acc = c["accent"]
-    bg  = c["bg"]
-    sur = c["surface"]
-    ovr = c["overlay"]
-    txt = c["text"]
-    dim = c["text_dim"]
+    acc  = c["accent"]
+    bg   = c["bg"]
+    sur  = c["surface"]
+    ovr  = c["overlay"]
+    txt  = c["text"]
+    dim  = c["text_dim"]
+    dark = c.get("scheme", "dark") == "dark"
     ar, ag, ab = _c2rgb(acc)
     tr, tg, tb = _c2rgb(txt)
-    def A(a): return f"rgba({ar},{ag},{ab},{a})"
-    def T(a): return f"rgba({tr},{tg},{tb},{a})"
+    # Neutral tints — white-based on dark themes, black-based on light themes
+    nr, ng, nb = (255, 255, 255) if dark else (0, 0, 0)
+    def A(a):  return f"rgba({ar},{ag},{ab},{a})"
+    def T(a):  return f"rgba({tr},{tg},{tb},{a})"
+    def N(a):  return f"rgba({nr},{ng},{nb},{a})"
     return f"""
 window {{ background-color: {bg}; }}
 
 .sidebar {{
     background-color: {sur};
-    border-right: 1px solid rgba(255,255,255,0.06);
+    border-right: 1px solid {N(0.06)};
     min-width: 210px;
 }}
 .sidebar-title {{
@@ -92,8 +96,8 @@ window {{ background-color: {bg}; }}
     letter-spacing: 1.5px; margin-top: 18px; margin-bottom: 6px;
 }}
 .card {{
-    background: rgba(255,255,255,0.035);
-    border: 1px solid rgba(255,255,255,0.07);
+    background: {N(0.035)};
+    border: 1px solid {N(0.08)};
     border-radius: 14px; padding: 14px 16px; margin-bottom: 8px;
 }}
 .card-name {{
@@ -130,18 +134,18 @@ window {{ background-color: {bg}; }}
     font-family: "JetBrainsMono Nerd Font", monospace; min-width: 160px;
 }}
 .info-val {{ font-size: 12px; color: {txt}; font-weight: 600; }}
-.info-row {{ padding: 9px 0; border-bottom: 1px solid rgba(255,255,255,0.04); }}
+.info-row {{ padding: 9px 0; border-bottom: 1px solid {N(0.05)}; }}
 .loading  {{ font-size: 13px; color: {dim}; padding: 32px; }}
 
 .search-entry {{
-    background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08);
+    background: {N(0.05)}; border: 1px solid {N(0.10)};
     border-radius: 10px; color: {txt}; font-size: 13px;
     padding: 6px 12px; margin-bottom: 12px;
 }}
 .search-entry:focus {{ border-color: {A(0.5)}; }}
 
 .input-field {{
-    background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
+    background: {N(0.05)}; border: 1px solid {N(0.12)};
     border-radius: 8px; color: {txt}; font-size: 13px; padding: 6px 10px;
 }}
 .input-field:focus {{ border-color: {A(0.5)}; }}
@@ -158,13 +162,13 @@ window {{ background-color: {bg}; }}
 .update-item {{ font-size: 12px; color: {txt}; font-family: "JetBrainsMono Nerd Font", monospace; }}
 .update-ver  {{ font-size: 11px; color: {dim}; font-family: "JetBrainsMono Nerd Font", monospace; }}
 
-scale trough    {{ background: rgba(255,255,255,0.08); border-radius: 4px; min-height: 6px; }}
+scale trough    {{ background: {N(0.10)}; border-radius: 4px; min-height: 6px; }}
 scale highlight {{ background: {acc}; border-radius: 4px; }}
 scale slider    {{ background: {txt}; border-radius: 50%; min-width: 16px; min-height: 16px; }}
 
 .wallpaper-box {{
     border-radius: 10px; overflow: hidden;
-    border: 2px solid rgba(255,255,255,0.1); min-width: 160px; min-height: 90px;
+    border: 2px solid {N(0.12)}; min-width: 160px; min-height: 90px;
 }}
 
 .sig-strong {{ color: #A3BE8C; }}
@@ -652,7 +656,7 @@ def read_bloom_colors():
     }
 
 
-def _write_gtk_ini_all(gtk=None, icon=None, cursor=None, font=None):
+def _write_gtk_ini_all(gtk=None, icon=None, cursor=None, font=None, scheme=None):
     """Write GTK 3 + 4 settings.ini with provided overrides (None = skip)."""
     import configparser as _cp
     for path in [
@@ -673,6 +677,10 @@ def _write_gtk_ini_all(gtk=None, icon=None, cursor=None, font=None):
             cp.set("Settings", "gtk-cursor-theme-name", cursor)
             cp.set("Settings", "gtk-cursor-theme-size", "24")
         if font   is not None: cp.set("Settings", "gtk-font-name",        font)
+        if scheme is not None:
+            prefer_dark = "true" if scheme == "dark" else "false"
+            cp.set("Settings", "gtk-application-prefer-dark-theme", prefer_dark)
+            cp.set("Settings", "gtk-color-scheme", "")  # clear any legacy override
         with open(path, "w") as f:
             cp.write(f, space_around_delimiters=False)
 

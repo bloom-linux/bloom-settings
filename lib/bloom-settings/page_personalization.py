@@ -295,11 +295,24 @@ class AppearancePage(Gtk.Box):
 
     def _set_pending(self, key, value):
         self._pending[key] = value
-        # Immediately update scheme buttons so the selection is visually clear
         if key == "scheme":
+            # Update scheme button highlight immediately
             for s, b in self._scheme_btns.items():
                 if s == value: b.add_css_class("primary")
                 else:          b.remove_css_class("primary")
+            # Auto-stage the active preset's palette for the new scheme so the
+            # palette colours actually switch (not just the scheme label)
+            preset = THEME_PRESETS.get(self._pending.get("preset", "Bloom"))
+            if preset:
+                variant = preset.get(value, preset.get("dark", {}))
+                for k in ("bg", "surface", "overlay", "text", "text_dim"):
+                    if k in variant:
+                        self._pending[k] = variant[k]
+                        if k in self._color_btns:
+                            try:
+                                rv = Gdk.RGBA(); rv.parse(variant[k])
+                                self._color_btns[k].set_rgba(rv)
+                            except Exception: pass
         self._mark_dirty()
 
     def _set_pending_preset(self, preset_name):
@@ -396,6 +409,7 @@ class AppearancePage(Gtk.Box):
             icon   = icon   if icon   != s.get("icon")   else None,
             cursor = cursor if cursor != s.get("cursor") else None,
             font   = font   if font   != s.get("font")   else None,
+            scheme = scheme if scheme_changed             else None,
         )
 
         if gtk and gtk != s.get("gtk"):
