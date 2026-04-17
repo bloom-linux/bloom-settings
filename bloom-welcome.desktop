@@ -2,7 +2,7 @@
 Name=Bloom Welcome
 Comment=Welcome to Bloom
 Exec=bloom-welcome
-Icon=bloom-icon
+Icon=distributor-logo
 Type=Application
 Categories=Settings;GTK;
 Terminal=false

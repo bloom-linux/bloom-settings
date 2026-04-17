@@ -2,7 +2,7 @@
 Name=Bloom Settings
 Comment=Configure your system
 Exec=bloom-settings
-Icon=bloom-icon
+Icon=preferences-system
 Type=Application
 Categories=Settings;GTK;
 Terminal=false

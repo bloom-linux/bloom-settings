@@ -445,7 +445,8 @@ class AppearancePage(Gtk.Box):
         if icon and icon != s.get("icon"):
             subprocess.Popen(["gsettings", "set", "org.gnome.desktop.interface", "icon-theme", icon])
             self._write_qt_icon_theme(icon)
-            self._write_rofi_icon_theme(icon)
+            # Rofi follows the active theme via the ~/.icons/bloom-current
+            # symlink, which bloom-generate-icons maintains. No rewrite needed.
             subprocess.Popen(["bloom-generate-icons"])
 
         if cursor and cursor != s.get("cursor"):
