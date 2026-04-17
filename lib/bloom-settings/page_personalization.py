@@ -227,15 +227,27 @@ class AppearancePage(Gtk.Box):
             lbl = Gtk.Label(label=color_label)
             lbl.add_css_class("card-desc"); lbl.set_hexpand(True); lbl.set_xalign(0)
             row.append(lbl)
-            cb = Gtk.ColorButton()
+            # ColorDialogButton (GTK 4.10+) opens a proper modal dialog instead
+            # of the legacy popover that would clip off-screen on small windows.
+            try:
+                dlg = Gtk.ColorDialog()
+                dlg.set_with_alpha(False)
+                cb = Gtk.ColorDialogButton(dialog=dlg)
+            except (TypeError, AttributeError):
+                cb = Gtk.ColorButton()  # fallback for GTK < 4.10
             cb.set_valign(Gtk.Align.CENTER)
             try:
                 rv = Gdk.RGBA()
                 rv.parse(bloom_colors.get(color_key, "#000000"))
                 cb.set_rgba(rv)
             except Exception: pass
-            cb.connect("color-set", lambda btn, k=color_key:
-                       self._set_pending(k, self._rgba_to_hex(btn.get_rgba())))
+            # Both widgets emit "notify::rgba" when the user picks; ColorButton
+            # also emits "color-set" — connect both for belt-and-suspenders.
+            _handler = lambda btn, *_, k=color_key: \
+                       self._set_pending(k, self._rgba_to_hex(btn.get_rgba()))
+            cb.connect("notify::rgba", _handler)
+            if hasattr(cb, "connect") and isinstance(cb, Gtk.ColorButton):
+                cb.connect("color-set", _handler)
             self._color_btns[color_key] = cb
             row.append(cb)
             palette_card.append(row)
@@ -261,11 +273,27 @@ class AppearancePage(Gtk.Box):
         font_card.add_css_class("card")
         fl = Gtk.Label(label="Interface Font"); fl.add_css_class("card-name")
         fl.set_hexpand(True); fl.set_xalign(0); font_card.append(fl)
-        font_btn = Gtk.FontButton()
+
+        # FontDialogButton opens a proper modal dialog (GTK 4.10+).
+        try:
+            font_dlg = Gtk.FontDialog()
+            font_btn = Gtk.FontDialogButton(dialog=font_dlg)
+            if cur_font:
+                # FontDialogButton expects a Pango.FontDescription
+                import gi
+                gi.require_version("Pango", "1.0")
+                from gi.repository import Pango
+                font_btn.set_font_desc(Pango.FontDescription.from_string(cur_font))
+            font_btn.connect("notify::font-desc",
+                             lambda b, *_: self._set_pending("font", b.get_font_desc().to_string()))
+        except (TypeError, AttributeError):
+            font_btn = Gtk.FontButton()
+            if cur_font:
+                font_btn.set_font(cur_font)
+            font_btn.connect("font-set",
+                             lambda b: self._set_pending("font", b.get_font()))
+
         font_btn.set_valign(Gtk.Align.CENTER)
-        if cur_font:
-            font_btn.set_font(cur_font)
-        font_btn.connect("font-set", lambda b: self._set_pending("font", b.get_font()))
         self._font_btn = font_btn
         font_card.append(font_btn)
         self._content.append(font_card)
@@ -396,7 +424,6 @@ class AppearancePage(Gtk.Box):
                                            "gtk-theme", light])
             except Exception: pass
             self._write_qt_scheme(scheme)
-            GLib.idle_add(_reload_app_css)
 
         # ── GTK theme / icon / cursor / font ──────────────────────────────────
         gtk    = p.get("gtk",    "")
@@ -434,8 +461,22 @@ class AppearancePage(Gtk.Box):
                                "monospace-font-name", font])
             self._update_bloom_colors({"font": font})
 
-        # Regenerate colors + restart the bar in one shot
-        subprocess.Popen(["bloom-generate-colors"])
+        # Regenerate colors + restart the bar, then reload our own live CSS so
+        # the settings window itself reflects the new palette immediately.
+        # Previously this was only done on scheme change — so picking a new
+        # preset within the same scheme left the window on the old colors
+        # until a reopen.
+        colors_changed = bool(bloom_changes) or scheme_changed
+        if colors_changed:
+            def _regen_then_reload():
+                try:
+                    subprocess.run(["bloom-generate-colors"], timeout=10)
+                except Exception:
+                    pass
+                GLib.idle_add(_reload_app_css)
+            threading.Thread(target=_regen_then_reload, daemon=True).start()
+        else:
+            subprocess.Popen(["bloom-generate-colors"])
 
         self._saved = self._pending.copy()
         self._mark_dirty()
