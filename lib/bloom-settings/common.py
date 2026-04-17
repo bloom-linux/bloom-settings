@@ -383,26 +383,51 @@ def desktop_name(desktop_id):
                     return line[5:].strip()
     return desktop_id.replace(".desktop", "")
 
+# Synthetic MIMEs have no official handlers — apps register themselves via the
+# `Categories=` key instead. Map each synthetic MIME to the category that means
+# "this app can handle it" so the dropdown actually has options.
+SYNTHETIC_MIME_CATEGORIES = {
+    "application/x-terminal-emulator": "TerminalEmulator",
+    "x-scheme-handler/terminal":       "TerminalEmulator",
+}
+
 def apps_for_mime(mime):
-    """Return [(name, desktop_id)] for apps that claim to handle mime."""
+    """Return [(name, desktop_id)] for apps that claim to handle mime.
+
+    An app qualifies if either:
+      * its MimeType= line lists `mime`, the wildcard `basemime/*`, or `*`, OR
+      * `mime` is a synthetic MIME and the app's Categories= line contains the
+        mapped category (e.g. TerminalEmulator for application/x-terminal-emulator).
+    """
     result = []
     seen = set()
     base_mime = mime.split("/")[0]
+    wanted_category = SYNTHETIC_MIME_CATEGORIES.get(mime)
     dirs = ["/usr/share/applications", os.path.expanduser("~/.local/share/applications")]
     for d in dirs:
         for path in glob_mod.glob(os.path.join(d, "*.desktop")):
             try:
                 content = open(path, errors="ignore").read()
-                in_mime = False
+                matches = False
                 name = ""
+                no_display = False
+                hidden = False
                 for line in content.splitlines():
                     if line.startswith("Name=") and not name:
                         name = line[5:].strip()
-                    if line.startswith("MimeType="):
+                    elif line.startswith("MimeType="):
                         mimes = line[9:].split(";")
                         if mime in mimes or f"{base_mime}/*" in mimes or "*" in mimes:
-                            in_mime = True
-                if in_mime and name:
+                            matches = True
+                    elif wanted_category and line.startswith("Categories="):
+                        cats = line[11:].split(";")
+                        if wanted_category in cats:
+                            matches = True
+                    elif line.startswith("NoDisplay=") and line[10:].strip().lower() == "true":
+                        no_display = True
+                    elif line.startswith("Hidden=") and line[7:].strip().lower() == "true":
+                        hidden = True
+                if matches and name and not no_display and not hidden:
                     did = os.path.basename(path)
                     if did not in seen:
                         seen.add(did)

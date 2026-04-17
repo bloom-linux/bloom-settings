@@ -48,7 +48,9 @@ class DefaultAppsPage(Gtk.Box):
         info = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         info.set_hexpand(True)
         info.append(Gtk.Label(label=label, css_classes=["card-name"], xalign=0))
-        info.append(Gtk.Label(label=f"Current: {cur_name}", css_classes=["card-desc"], xalign=0))
+        current_lbl = Gtk.Label(label=f"Current: {cur_name}",
+                                css_classes=["card-desc"], xalign=0)
+        info.append(current_lbl)
         card.append(info)
 
         if apps:
@@ -61,10 +63,38 @@ class DefaultAppsPage(Gtk.Box):
 
             apply_btn = Gtk.Button(label="Set"); apply_btn.add_css_class("act-btn")
             apply_btn.set_valign(Gtk.Align.CENTER)
-            apply_btn.connect("clicked",
-                              lambda _, c=combo, is_=ids, m=mime:
-                              subprocess.Popen(["xdg-mime", "default", is_[c.get_selected()], m]))
+            apply_btn.connect("clicked", self._on_set_clicked,
+                              combo, names, ids, mime, current_lbl, apply_btn)
             card.append(combo); card.append(apply_btn)
         else:
-            card.append(Gtk.Label(label="No apps found", css_classes=["card-desc"]))
+            card.append(Gtk.Label(label="No apps found — install one from Software",
+                                  css_classes=["card-desc"]))
         return card
+
+    def _on_set_clicked(self, _btn, combo, names, ids, mime, current_lbl, apply_btn):
+        idx = combo.get_selected()
+        if idx < 0 or idx >= len(ids):
+            return
+        chosen_id   = ids[idx]
+        chosen_name = names[idx]
+        apply_btn.set_sensitive(False)
+        apply_btn.set_label("Setting…")
+
+        def worker():
+            result = subprocess.run(["xdg-mime", "default", chosen_id, mime],
+                                    capture_output=True, text=True)
+            GLib.idle_add(self._on_set_done, result, chosen_name,
+                          current_lbl, apply_btn)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_set_done(self, result, chosen_name, current_lbl, apply_btn):
+        apply_btn.set_sensitive(True)
+        if result.returncode == 0:
+            current_lbl.set_label(f"Current: {chosen_name}")
+            apply_btn.set_label("✓")
+            GLib.timeout_add(1200, lambda: (apply_btn.set_label("Set"), False)[1])
+        else:
+            apply_btn.set_label("Failed")
+            GLib.timeout_add(1800, lambda: (apply_btn.set_label("Set"), False)[1])
+        return False

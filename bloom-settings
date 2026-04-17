@@ -16,6 +16,7 @@ import common as _common
 from common import CSS, _reload_app_css
 
 from page_personalization import AppearancePage, DisplayPage, SoundPage
+from page_lockscreen import LockScreenPage
 from page_users import UsersPage
 from page_connectivity import NetworkPage, BluetoothPage
 from page_applications import DefaultAppsPage
@@ -30,6 +31,7 @@ PAGES = [
     ("󰸉", "Appearance",         lambda w: AppearancePage(w)),
     ("󰍹", "Display",            lambda w: DisplayPage(w)),
     ("󰕾", "Sound",              lambda w: SoundPage(w)),
+    ("󰌾", "Lock Screen",       lambda w: LockScreenPage(w)),
     (None, "USERS", None),
     ("󰀖", "Users",              lambda w: UsersPage(w)),
     (None, "CONNECTIVITY", None),
